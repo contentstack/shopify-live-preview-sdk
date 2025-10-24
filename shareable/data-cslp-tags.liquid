@@ -1,0 +1,50 @@
+{% if metaobject_system.type %}
+  {% assign cs_type = metaobject_system.type %}
+  {% assign cs_handle = metaobject_system.handle %}
+{% elsif metaobject_system != blank %}
+  {% assign first_item = metaobject_system.first %}
+  {% if first_item.system %}
+    {% assign cs_type = first_item.system.type %}
+    {% assign cs_handle = first_item.system.handle %}
+    {% assign parent_tag = true %}
+  {% endif %}
+{% endif %}
+
+{%- assign type_array = cs_type | split: '-' -%}
+{%- assign content_type = type_array | first | default: cs_content_type_uid | default: 'no_content_type_uid_found' -%}
+
+{%- assign handle_array = cs_handle | split: '-' -%}
+{%- assign cs_entry_uid = handle_array
+  | first
+  | default: cs_entry_uid
+  | default: product.metafields.contentstack_products.entry_uid.value
+  | default: 'no_entry_uid_found'
+-%}
+
+{%- assign data_cslp = content_type | append: '.' | append: cs_entry_uid  -%}
+
+{% assign field_uid = handle_array[1] %}
+{% if field_uid %}
+  {% assign data_cslp = data_cslp | append: '.' | append: field_uid %}
+{% endif %}
+
+{% if parent_tag == blank %}
+  {% assign block_uid = type_array[2] %}
+  {% assign block_no = handle_array[3] %}
+
+  {% if handle_array.size == 4 and field_name %}
+    {% assign data_cslp = data_cslp | append: '.' | append: block_no %}
+  {% endif %}
+
+  {% if block_uid and field_name %}
+    {% assign data_cslp = data_cslp | append: '.' | append: block_uid %}
+  {% endif %}
+
+  {% if field_name %}
+    {% assign data_cslp = data_cslp | append: '.' | append: field_name %}
+  {% endif %}
+
+  {% assign data_cslp = data_cslp | strip %}
+{% endif %}
+
+data-cslp="{{ data_cslp }}"

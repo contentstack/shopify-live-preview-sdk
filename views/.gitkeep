@@ -1,0 +1,2 @@
+# This file ensures the views directory is included in version control and deployments
+# The views directory will be used to store cloned GitHub repositories 
