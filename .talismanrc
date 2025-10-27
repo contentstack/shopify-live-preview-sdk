@@ -2,4 +2,24 @@ fileignoreconfig:
 - filename: .github/workflows/secrets-scan.yml
   ignore_detectors:
     - filecontent
+- filename: package-lock.json
+  checksum: d8937c301f7feec967982ef5cd009e27e7ec424c1913dc6bb93d0882ee39d220
+- filename: src/setup-exports.ts
+  checksum: 7e42be96e195fc6250c4f1fef8d64f6d8eaccdd6406e461aa71dededb862dd41
+- filename: jest.setup.js
+  checksum: da021345459d1ddee9af0fcff7f8f04945f380f8967c08a9c2dc93d215c3c025
+- filename: src/index.ts
+  checksum: 4133c114e8ecf9e600ef26e1c2947f0c121a6a37a28b945008cf88e5c4f55ee4
+- filename: src/Contentstack/index.ts
+  checksum: 342ea5156329c30bfdc822504ce4276e6469d7322febf7e0b16b0f977a1aa5db
+- filename: README.md
+  checksum: 0b65e13b1a6cbafad5169ba8496de88c6ba75c66dcfff0c2e7f13d42016f1654
+- filename: shareable/cs-lp-script.liquid
+  checksum: f5bf56349714ce0c61ca4ac5a8e06cda0874cddb24c75a60a5f75a300ba05235
+- filename: src/Liquid/index.ts
+  checksum: 3a03aa077707d17c8dbbfa67d11c969e9fd21d1a753a7e25649607eec2cdee86
+- filename: src/setup/index.js
+  checksum: e71ec7cc7cfc72cd7f87ce90c3538914ce571788872c00a009a3221dd5b876ef
+- filename: src/setup/__tests__/index.test.js
+  checksum: bfe9d72867ce3255060c5b494460c04f89fba2f2f513f6fdaf053624d9742119
 version: "1.0"

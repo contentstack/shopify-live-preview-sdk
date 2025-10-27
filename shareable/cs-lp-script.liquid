@@ -1,0 +1,377 @@
+{% assign live_preview_middleware_url = 'https://dndshopifylivepreviewmiddlewareblt3e8.dev22contentstackapps.com' %}
+{% assign middlewarePreviewDataRoute = '/get-preview-data' %}
+
+{%- capture settings_json -%}
+{
+  {%- for key in settings -%}
+    "{{ key }}": {{ settings[key] | json }}{% unless forloop.last %},{% endunless %}
+  {%- endfor -%}
+}
+{%- endcapture -%}
+
+{% assign section_id = section.id | json %}
+{% assign section_index = section.index | json %}
+{% assign section_settings = section.settings | json %}
+
+{%- capture blocks_json -%}
+[
+  {%- for block in section.blocks -%}
+    {
+      "id": {{ block.id | json }},
+      "type": {{ block.type | json }},
+      "settings": {{ block.settings | json }}
+    }
+    {%- unless forloop.last -%},{%- endunless -%}
+  {%- endfor -%}
+]
+{%- endcapture -%}
+
+{% assign payload = '{
+  "section": {
+    "id": '
+  | append: section_id
+  | append: ',
+    "index": '
+  | append: section_index
+  | append: ',
+    "settings": '
+  | append: section_settings
+  | append: ',
+    "blocks": '
+  | append: blocks_json
+  | append: '
+  }
+}'
+%}
+
+<!-- For testing purpose only -->
+<pre id="cs-lp-script"></pre>
+
+<script type='module'>
+  if (!window.ContentstackLivePreviewInitialized) {
+    const { default: ContentstackLivePreview } = await import('https://esm.sh/@contentstack/live-preview-utils@4.0.1');
+    console.log("Initializing the live preview sdk");
+    ContentstackLivePreview.init({
+      enable: true,
+      ssr: false,
+    });
+    window.ContentstackLivePreviewInitialized = true;
+  }
+</script>
+
+<script>
+  if(!cs_throttle && !(typeof cs_throttle === 'function') ){
+    function cs_throttle(fn, delay) {
+        let lastCall = 0;
+        let timeoutId;
+      
+        return function (...args) {
+          const now = Date.now();
+      
+          if (now - lastCall >= delay) {
+            lastCall = now;
+            fn.apply(this, args);
+          } else {
+            clearTimeout(timeoutId);
+            timeoutId = setTimeout(() => {
+              lastCall = Date.now();
+              fn.apply(this, args);
+            }, delay - (now - lastCall));
+          }
+        };
+      }
+
+    var sendPreviewRequest = cs_throttle((theme_variable, livePreviewInfo) => {
+        {%- assign trimmed_url = live_preview_middleware_url | replace: '/$', '' -%}
+        {%- assign trimmed_route = middlewarePreviewDataRoute | replace: '^/', '' -%}
+        {%- assign preview_data_url = trimmed_url | append: '/' | append: trimmed_route -%}
+        fetch({{ preview_data_url | json }}, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ theme_variable: theme_variable, ...livePreviewInfo.postBody }),
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(data.html, "text/html");
+      
+            const getPartialCslp = (cslp) => cslp.split('.').slice(1).join('.');
+      
+            let previewElements = document.querySelectorAll(
+              `[data-cslp="${livePreviewInfo.data_cslp}"]`
+            );
+      
+            if (!previewElements.length) {
+              const partialCslp = getPartialCslp(livePreviewInfo.data_cslp);
+              const allCandidates = document.querySelectorAll('[data-cslp]');
+              previewElements = Array.from(allCandidates).filter((el) => {
+                const cslp = el.getAttribute('data-cslp');
+                return cslp && cslp.endsWith(partialCslp);
+              });
+            }
+      
+            console.log("Matched preview elements:", previewElements);
+      
+            if (previewElements.length) {
+              let newElements = doc.querySelectorAll(
+                `[data-cslp="${livePreviewInfo.data_cslp}"]`
+              );
+      
+              if (!newElements.length) {
+                const partialCslp = getPartialCslp(livePreviewInfo.data_cslp);
+                newElements = Array.from(doc.querySelectorAll('[data-cslp]')).filter((el) =>
+                  el.getAttribute('data-cslp')?.endsWith(partialCslp)
+                );
+              }
+      
+              console.log("Matched new elements:", newElements, doc);
+      
+              previewElements.forEach((previewEl, index) => {
+                const newEl = newElements[index];
+                if (newEl) {
+                  previewEl.replaceWith(newEl);
+                } else {
+                  console.warn(`No matching new element found for preview element at index ${index}`);
+                }
+              });
+            } else {
+              console.warn("No target elements found on the current page.");
+            }
+          })
+          .catch((error) => console.log(error));
+      }, 500);
+    }
+  
+  window.addEventListener("message", (event) => {
+    if (
+      event.data.from === "live-preview" &&
+      event.data.type === "live-preview" &&
+      event.data.data?.type === "client-data-send"
+    ) {
+      console.log("Message received:", event.data);
+
+      function parseJSONSafe(jsonString) {
+        try {
+          return JSON.parse(jsonString.replace(/\\n/g, "").trim());
+        } catch (error) {
+          console.error("JSON parsing error:", error);
+          return null;
+        }
+      }
+
+      function getLPInfo() {
+        const params = new URLSearchParams(window.location.search);
+        return {
+          isLivePreview: !!(params.get("live_preview") || event.data.data.data.hash ),
+          queryString: `live_preview=${params.get("live_preview")}&ctUid=${params.get(
+            "content_type_uid"
+          )}&entryUid=${params.get("entry_uid")}`,
+          data_cslp: event.data.data.data.data_cslp || "",
+          postBody: {
+            live_preview: params.get("live_preview") || event.data.data.data.hash,
+            ctUid: params.get("content_type_uid") || event.data.data.data.content_type_uid,
+            entryUid: params.get("entry_uid") || event.data.data.data.entry_uid,
+          },
+        };
+      }
+
+      const livePreviewInfo = getLPInfo();
+
+      window.cslp_shopify_data = {
+        shop: {
+          id: "{{ shop.id }}",
+          name: "{{ shop.name | escape }}",
+          domain: "{{ shop.domain }}",
+          email: "{{ shop.email }}",
+          phone: "{{ shop.phone }}",
+          currency: "{{ shop.currency }}",
+          description: "{{ shop.description | escape }}",
+          money_format: "{{ shop.money_format }}",
+          enabled_currencies: {{ shop.enabled_currencies | json }},
+        },
+        primary_locale: "{{ shop.primary_locale }}",
+        settings: parseJSONSafe({{ settings_json | strip | json }}),
+      };
+
+      let payload = parseJSONSafe(`{{ payload }}`);
+
+      var theme_variable = {
+        data_cslp: livePreviewInfo.data_cslp,
+        liquid_path: {{ liquid_path | json }},
+        required_cs_ct: [],
+        payload: {
+          section: payload?.section,
+          settings: window.cslp_shopify_data?.settings,
+          shop: window.cslp_shopify_data?.shop,
+          metaobjects: {},
+          localization: {
+              language: {
+                iso_code: {{ localization.language.iso_code | json }},
+                name: {{ localization.language.name | json }},
+                primary: {{ localization.language.primary | json }}
+              },
+              country: {
+                iso_code: {{ localization.country.iso_code | json }},
+                name: {{ localization.country.name | json }},
+                currency: {
+                  iso_code: {{ localization.country.currency.iso_code | json }},
+                  name: {{ localization.country.currency.name | json }},
+                  symbol: {{ localization.country.currency.symbol | json }}
+                }
+              },
+              available_languages: {{ localization.available_languages | json }},
+              available_countries: {{ localization.available_countries | json }}
+            }
+        },
+      };
+
+      // START: Section to handle the required content type logic
+      {% assign required_cs_ct_keys = required_cs_ct | split: "," %}
+      {% assign normalized_keys = "" %}
+      {% for key in required_cs_ct_keys %}
+        {% assign trimmed_key = key | strip %}
+        {% if normalized_keys == "" %}
+          {% assign normalized_keys = trimmed_key %}
+        {% else %}
+          {% assign normalized_keys = normalized_keys | append: "," | append: trimmed_key %}
+        {% endif %}
+      {% endfor %}
+      
+      {% assign required_cs_ct_keys = normalized_keys | split: "," %}
+      
+      {% for required_cs_ct_key in required_cs_ct_keys %}
+        theme_variable.required_cs_ct.push("{{ required_cs_ct_key }}");
+      {% endfor %}
+
+          if (
+        theme_variable.required_cs_ct.findIndex(
+          (val) => val === livePreviewInfo.postBody.ctUid
+        ) === -1
+      ){
+            console.info("Required Contentstack condition did not passed for this script tag.")
+        return;
+            
+      }
+       // END: Section to handle the required content type logic
+
+
+      // If the used meta objects data has been passed, we need to update the metaobject object so that it can be used properly while re-rendering
+      // Extract metaobject data from Shopify
+      {% assign metaobject_data = metaobjects.contentstack_lp_metaobjects_list.contentstack-lp-metaobjects-list-entry %}
+    
+      {%- if metaobject_data != blank and metaobject_data.types != blank %}
+        {% assign extracted_metaobjects = "" %}
+        const extracted_metaobject = {};
+    
+        {% for type in metaobject_data.types.value %}
+          {% assign type_parts = type | split: "." %}
+    
+          {% if type_parts.size > 1 %}
+            {% assign type_key = type_parts[0] %}
+            {% assign handle_id = type_parts[1] %}
+            {% assign metaobject_entry = metaobjects[type_key][handle_id] %}
+    
+    
+            {% if metaobject_entry != blank  %}
+              {% assign metaobject_values = metaobject_entry | json %}
+            {% else %}
+              {% assign metaobject_values = '{}' %}
+            {% endif %}
+            if(extracted_metaobject["{{type_key}}"]){
+              const metaobject_final_value = {{ metaobject_values }};
+              metaobject_final_value["___system"] = {
+                type: {{ metaobject_entry.system.type | json }},
+                handle: {{ metaobject_entry.system.handle | json }},
+                id: {{ metaobject_entry.system.id | json }},
+                url: {{ metaobject_entry.system.url | json }},
+              }
+              extracted_metaobject["{{type_key}}"]["{{ handle_id }}"] = metaobject_final_value
+              extracted_metaobject["{{type_key}}"].___values.push(metaobject_final_value)
+            } else {
+              const metaobject_final_value = {{ metaobject_values }};
+              metaobject_final_value["___system"] = {
+                type: {{ metaobject_entry.system.type | json }},
+                handle: {{ metaobject_entry.system.handle | json }},
+                id: {{ metaobject_entry.system.id | json }},
+                url: {{ metaobject_entry.system.url | json }},
+              };
+              extracted_metaobject["{{type_key}}"] = {
+                "{{ handle_id }}": metaobject_final_value,
+                ___values: [metaobject_final_value]
+              };
+            }
+          {% else %}
+            console.warn("Invalid type format, skipping:", "{{ type }}");
+          {% endif %}
+        {% endfor %}
+    
+        {% assign extracted_metaobjects = '{' | append: extracted_metaobjects | append: '}' %}
+    
+        theme_variable.payload.metaobjects = extracted_metaobject;
+    
+      {% else %}
+        console.warn("No metaobject data found.");
+      {% endif %}
+
+      {%- if product != blank %}
+          let product = {{ product | json }};
+          let prod_metafields = {};
+          let cs_prod_processed_value = {};
+          {%- for field in product.metafields.contentstack_products -%}
+            {
+              {% assign metafield_namespace = field[0] %}
+              {% assign metafield_value = product.metafields.contentstack_products[metafield_namespace].value %}
+              const meta_is_array = Array.isArray({{ metafield_value | json }});
+              
+              if(meta_is_array){
+                cs_prod_processed_value = [];
+                {%- for item in metafield_value  -%}
+                {
+                  let valueObj = {{ item | json }};
+                  valueObj.___system = {
+                    handle: {{ item.system.handle | json}},
+                    type: {{ item.system.type | json }},
+                    id: {{ item.system.id | json }},
+                    url: {{ item.system.url | json }}
+                  }
+                  cs_prod_processed_value.push(valueObj)
+                }
+                {%- endfor -%}
+              } else {
+                 cs_prod_processed_value = {{ metafield_value | json }};
+              cs_prod_processed_value["___system"] = {
+                    type: {{ metafield_value.system.type | json }},
+                    handle: {{ metafield_value.system.handle | json }},
+                    id: {{ metafield_value.system.id | json}},
+                    url: {{ metafield_value.system.url | json }}
+                  };
+              }
+      
+              prod_metafields["{{ metafield_namespace }}"] = cs_prod_processed_value;
+              if(Array.isArray(cs_prod_processed_value) ){
+              prod_metafields["{{ metafield_namespace }}"].___value = [...cs_prod_processed_value];
+                
+              } else if (cs_prod_processed_value && typeof cs_prod_processed_value === 'object') {
+              prod_metafields["{{ metafield_namespace }}"].___value = {...cs_prod_processed_value};
+                
+              } else {
+                prod_metafields["{{ metafield_namespace }}"].___value = cs_prod_processed_value;
+                
+              }
+            }
+          {%- endfor -%}
+      
+          if (!product.metafields) product.metafields = {};
+          product.metafields.contentstack_products = prod_metafields;
+          theme_variable.payload.product = product;
+      {%- endif %}
+
+      if (livePreviewInfo?.isLivePreview) {
+        console.log("theme:", theme_variable);
+        sendPreviewRequest(theme_variable, livePreviewInfo);
+      }
+    }
+  });
+</script>
