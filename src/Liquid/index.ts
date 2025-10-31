@@ -103,7 +103,6 @@ export function setupLiquidEngine(options: LiquidEngineOptions = {}): Liquid {
             const schemaJson = this.schemaContent.join('\n');
             try {
                 const schema = JSON.parse(schemaJson);
-                console.log('Parsed schema:', schema);
                 return `<script type="application/json">${JSON.stringify(schema)}</script>`;
             } catch (err) {
                 console.error('Error parsing schema:', err.message);
@@ -129,10 +128,8 @@ export function setupLiquidEngine(options: LiquidEngineOptions = {}): Liquid {
     });
 
     engine.registerFilter('image_url', (image, options = {}) => {
-        console.log('image_url filter called with:', image, options);
         
         if (!image) {
-            console.log('No image provided, returning placeholder');
             return '/placeholder-image.jpg';
         }
         
@@ -144,7 +141,6 @@ export function setupLiquidEngine(options: LiquidEngineOptions = {}): Liquid {
         } else if (image.src) {
             baseUrl = image.src;
         } else {
-            console.log('No valid URL found in image object');
             return '/placeholder-image.jpg';
         }
     
@@ -320,7 +316,6 @@ export function setupLiquidEngine(options: LiquidEngineOptions = {}): Liquid {
     
                     if (block.type) {
                         filenameToRender = block.type === '@app' ? 'app-block' : block.type;
-                        console.log(`[Custom Render] Rendering for block type: ${block.type}, using snippet: ${filenameToRender}.liquid`);
                     } else {
                         throw new Error(`[Custom Render] Cannot render block: "block.type" is missing. Block data: ${JSON.stringify(block)}`);
                     }
@@ -396,14 +391,6 @@ export function setupLiquidEngine(options: LiquidEngineOptions = {}): Liquid {
                 ...blockContext,         // Block-specific context (if any)
                 ...localContextFromParams // Explicit render parameters (highest priority)
             };
-    
-            console.log(`[Custom Render] Rendering ${filePath} with globals:`, {
-                hasShop: !!renderCtx.shop,
-                hasProduct: !!renderCtx.product,
-                hasLocalization: !!renderCtx.localization,
-                locale: renderCtx.localization?.language?.iso_code,
-                productTitle: renderCtx.product?.title
-            });
     
             try {
                 const html = await this.liquid.renderFile(filePath, renderCtx);

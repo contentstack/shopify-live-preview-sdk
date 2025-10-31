@@ -51,7 +51,6 @@
 <script type='module'>
   if (!window.ContentstackLivePreviewInitialized) {
     const { default: ContentstackLivePreview } = await import('https://esm.sh/@contentstack/live-preview-utils@4.0.1');
-    console.log("Initializing the live preview sdk");
     ContentstackLivePreview.init({
       enable: true,
       ssr: false,
@@ -113,7 +112,6 @@
               });
             }
       
-            console.log("Matched preview elements:", previewElements);
       
             if (previewElements.length) {
               let newElements = doc.querySelectorAll(
@@ -127,7 +125,6 @@
                 );
               }
       
-              console.log("Matched new elements:", newElements, doc);
       
               previewElements.forEach((previewEl, index) => {
                 const newEl = newElements[index];
@@ -151,7 +148,6 @@
       event.data.type === "live-preview" &&
       event.data.data?.type === "client-data-send"
     ) {
-      console.log("Message received:", event.data);
 
       function parseJSONSafe(jsonString) {
         try {
@@ -370,7 +366,6 @@
       {%- endif %}
 
       if (livePreviewInfo?.isLivePreview) {
-        console.log("theme:", theme_variable);
         sendPreviewRequest(theme_variable, livePreviewInfo);
       }
     }
