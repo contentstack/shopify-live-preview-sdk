@@ -27,7 +27,7 @@ out/
 *.d.ts.map
 *.js.map
 *.d.ts
-!src/types/setup-index-module.d.ts
+!src/setup/index.d.ts
 
 # ESLint cache
 .eslintcache
