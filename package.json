@@ -12,7 +12,7 @@
     }
   },
   "scripts": {
-    "build": "tsc && mkdir -p dist/setup && cp src/setup/index.js dist/setup/index.js && cp src/setup/index.d.ts dist/setup/index.d.ts",
+    "build": "tsc && cpy 'src/setup/*.{js,d.ts}' dist/setup",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "lint": "eslint . --ext .ts",
     "format": "prettier --write \"src/**/*.ts\"",
@@ -55,7 +55,8 @@
     "prettier": "^3.2.5",
     "ts-jest": "^29.1.2",
     "ts-jest-resolver": "^2.0.1",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "cpy-cli": "^5.0.0"
   },
   "files": [
     "dist/**/*"
