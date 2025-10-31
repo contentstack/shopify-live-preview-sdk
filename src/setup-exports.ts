@@ -18,4 +18,4 @@ export type {
   ShopifyFieldsOptions,
   KeyBasedContentType,
   FieldSchema
-} from './setup/index.d.ts'; 
+} from './setup/index.js';
