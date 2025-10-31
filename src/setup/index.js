@@ -393,7 +393,6 @@ const saveDataInObject = (type, path, data, dataType, entryMetaObject, extraData
 }
 
 const getUpdatedProductMetafields = async (currentMetafields, contentType, entry, { ctUid, entryUid, hash }) => {
-  console.log("🚀 ~ getUpdatedProductMetafields ~ currentMetafields:", currentMetafields)
   if (!currentMetafields || typeof currentMetafields !== 'object') return;
   const updatedMetafields = {};
   for (const [key, value] of Object.entries(currentMetafields)) {
@@ -705,7 +704,6 @@ const getUpdatedMetaobject = async (currentMetaobjects, keyBasedCt, entry, { ctU
     }
     currentMetaobjects[type] = updatedMetaobjects[type];
   }
-  console.log("🚀 ~ getUpdatedMetaobject ~ updatedMetaobjects:", JSON.stringify(updatedMetaobjects, null, 4))
   return {
     currentMetaobjects,
     dataCSLPMapping

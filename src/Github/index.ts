@@ -28,7 +28,6 @@ async function downloadRepositoryZip(
   const zipPath = path.join(targetPath, 'repo.zip');
   
   try {
-    console.log(`Downloading ${owner}/${repo} (${branch}) from GitHub API...`);
     
     const response = await axios({
       method: 'GET',
@@ -44,7 +43,6 @@ async function downloadRepositoryZip(
     // Download the zip file
     await pipeline(response.data, createWriteStream(zipPath));
     
-    console.log(`Downloaded repository zip to ${zipPath}`);
     
     // Extract the zip file (we'll need to implement this next)
     await extractZipFile(zipPath, targetPath);
@@ -63,14 +61,12 @@ async function downloadRepositoryZip(
  */
 async function extractZipFile(zipPath: string, targetPath: string): Promise<void> {
   try {
-    console.log(`Attempting to extract ${zipPath} to ${targetPath}...`);
     
     const zip = new AdmZip(zipPath);
     
     // Extract all files to target directory
     zip.extractAllTo(targetPath, true);
     
-    console.log(`Successfully extracted repository to ${targetPath}`);
     
     // Handle GitHub's zip structure - move files from the root subdirectory
     const items = fs.readdirSync(targetPath);
@@ -102,7 +98,6 @@ async function extractZipFile(zipPath: string, targetPath: string): Promise<void
       
       // Remove the now-empty subdirectory
       fs.rmSync(rootDirPath, { recursive: true, force: true });
-      console.log(`Reorganized files from GitHub zip structure`);
     }
     
   } catch (error) {
@@ -129,20 +124,16 @@ export async function cloneRepository(
   let actualTargetPath = targetPath;
 
   // First, try to use the provided target path (should be the pre-built views directory)
-  console.log(`Attempting to use target directory: ${actualTargetPath}`);
 
   try {
     // Test if we can write to the target directory
     if (fs.existsSync(actualTargetPath)) {
-      console.log(`Target directory exists, testing write permissions...`);
       // Try to create a test file to check write permissions
       const testFile = path.join(actualTargetPath, '.write-test');
       fs.writeFileSync(testFile, 'test');
       fs.unlinkSync(testFile);
-      console.log(`Write permissions confirmed for ${actualTargetPath}`);
       
       // Empty the directory for fresh clone
-      console.log(`Emptying directory: ${actualTargetPath}`);
       const items = fs.readdirSync(actualTargetPath);
       for (const item of items) {
         const itemPath = path.join(actualTargetPath, item);
@@ -152,9 +143,7 @@ export async function cloneRepository(
           fs.unlinkSync(itemPath);
         }
       }
-      console.log(`Successfully emptied ${actualTargetPath}`);
     } else {
-      console.log(`Creating target directory: ${actualTargetPath}`);
       fs.mkdirSync(actualTargetPath, { recursive: true });
     }
   } catch (error) {
@@ -165,14 +154,11 @@ export async function cloneRepository(
     // This provides some persistence within the same serverless container lifecycle
     const repoIdentifier = `${owner}-${repo}`.replace(/[^a-zA-Z0-9-]/g, '-');
     const fallbackDir = path.join('/tmp', `views-${repoIdentifier}`);
-    console.log(`Using fallback directory: ${fallbackDir}`);
-    console.log(`Note: Repository will be cloned to temporary location. Content may be lost between container restarts.`);
     
     actualTargetPath = fallbackDir;
     
     // Create or clean the fallback directory
     if (fs.existsSync(fallbackDir)) {
-      console.log(`Cleaning existing fallback directory: ${fallbackDir}`);
       const items = fs.readdirSync(fallbackDir);
       for (const item of items) {
         const itemPath = path.join(fallbackDir, item);
@@ -183,12 +169,8 @@ export async function cloneRepository(
     }
   }
 
-  // Try git clone first, fall back to GitHub API if git is not available
-  const branchInfo = branch ? ` (branch: ${branch})` : ' (default branch)';
-  
   try {
     // First, try using git clone
-    console.log(`Attempting to clone ${owner}/${repo}${branchInfo} using git...`);
     
     let cloneCommand = `git clone --depth 1`;
     if (branch) {
@@ -197,18 +179,15 @@ export async function cloneRepository(
     cloneCommand += ` https://${auth}@github.com/${owner}/${repo}.git .`;
     
     execSync(cloneCommand, { cwd: actualTargetPath, stdio: 'inherit' }); 
-    console.log(`Successfully cloned ${owner}/${repo}${branchInfo} into ${actualTargetPath} using git`);
     
   } catch (gitError) {
     const error = gitError as Error & { status?: number };
     
     // If git command is not found (status 127), try GitHub API download
     if (error.status === 127 || error.message.includes('git: command not found')) {
-      console.log(`Git not available (${error.message}), falling back to GitHub API download...`);
       
       try {
         await downloadRepositoryZip(cloneConfig, actualTargetPath);
-        console.log(`Successfully downloaded ${owner}/${repo}${branchInfo} into ${actualTargetPath} using GitHub API`);
       } catch (apiError) {
         console.error(`Both git clone and GitHub API download failed:`, apiError);
         throw new Error(`Failed to obtain repository: Git unavailable and API download failed - ${(apiError as Error).message}`);
