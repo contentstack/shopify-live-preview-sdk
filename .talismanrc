@@ -22,4 +22,6 @@ fileignoreconfig:
   checksum: e71ec7cc7cfc72cd7f87ce90c3538914ce571788872c00a009a3221dd5b876ef
 - filename: src/setup/__tests__/index.test.js
   checksum: bfe9d72867ce3255060c5b494460c04f89fba2f2f513f6fdaf053624d9742119
+- filename: src/setup/index.d.ts
+  checksum: 9369a9bb34c12addfdae51d7d7a6bffdf7a3d8dd93635b3de7950db04dbf958b
 version: "1.0"
