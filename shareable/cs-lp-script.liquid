@@ -1,5 +1,6 @@
-{% assign live_preview_middleware_url = 'https://dndshopifylivepreviewmiddlewareblt3e8.dev22contentstackapps.com' %}
-{% assign middlewarePreviewDataRoute = '/get-preview-data' %}
+{% assign live_preview_middleware_url = '' %}
+{% comment %} NOTE: Do not add a trailing slash (/) at the end of the live_preview_middleware_url value. {% endcomment %}
+{% assign middleware_preview_data_route = '/get-preview-data' %}
 
 {%- capture settings_json -%}
 {
@@ -83,8 +84,8 @@
 
     var sendPreviewRequest = cs_throttle((theme_variable, livePreviewInfo) => {
         {%- assign trimmed_url = live_preview_middleware_url | replace: '/$', '' -%}
-        {%- assign trimmed_route = middlewarePreviewDataRoute | replace: '^/', '' -%}
-        {%- assign preview_data_url = trimmed_url | append: '/' | append: trimmed_route -%}
+        {%- assign trimmed_route = middleware_preview_data_route | replace: '^/', '' -%}
+        {%- assign preview_data_url = trimmed_url | append: trimmed_route -%}
         fetch({{ preview_data_url | json }}, {
           method: "POST",
           headers: {
