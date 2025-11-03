@@ -60,5 +60,9 @@
   },
   "files": [
     "dist/**/*"
-  ]
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/contentstack/shopify-live-preview-sdk.git"
+  }
 }
