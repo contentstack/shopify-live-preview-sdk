@@ -21,6 +21,32 @@ const getSafeOwn = (obj, key) => {
   return Object.prototype.hasOwnProperty.call(obj, k) ? obj[k] : undefined;
 };
 
+const sanitizeContentType = (contentType) => {
+  if (!contentType || typeof contentType !== 'object') return contentType;
+  const safe = { ...contentType };
+  const safeUid = sanitizeKey(safe.uid);
+  if (safeUid) safe.uid = safeUid;
+  if (Array.isArray(safe.schema)) {
+    safe.schema = safe.schema.map((f) => {
+      if (!f || typeof f !== 'object') return f;
+      const sf = { ...f };
+      const fuid = sanitizeKey(sf.uid);
+      if (fuid) sf.uid = fuid;
+      return sf;
+    });
+  }
+  if (Array.isArray(safe.blocks)) {
+    safe.blocks = safe.blocks.map((b) => {
+      if (!b || typeof b !== 'object') return b;
+      const sb = { ...b };
+      const buid = sanitizeKey(sb.uid);
+      if (buid) sb.uid = buid;
+      return sb;
+    });
+  }
+  return safe;
+};
+
 const createNullProtoCopy = (obj) => {
   if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) return obj;
   const safe = Object.create(null);
@@ -167,13 +193,19 @@ const fetchContentType = async (contentTypeUid, hash) => {
 };
 
 const getShopifyFields = async (content_type, entries, type, Path, entryMetaObject, dataCSLPMapping, extraData) => {
-  const allFields = [];
-  const content_type_fields = content_type?.schema;
-  // Sanitize inbound entries to avoid prototype pollution via malicious keys
+  // Sanitize inbound arguments
+  const safeContentType = sanitizeContentType(content_type) || {};
   const safeEntries = Array.isArray(entries) ? entries.map(createNullProtoCopy) : [];
+  const safeType = sanitizeKey(type) || '';
+  const safePath = sanitizeKey(Path) || '';
+  const safeEntryMetaObject = (entryMetaObject && typeof entryMetaObject === 'object') ? entryMetaObject : Object.create(null);
+  const safeDataCSLPMapping = (dataCSLPMapping && typeof dataCSLPMapping === 'object') ? dataCSLPMapping : Object.create(null);
+  const safeExtraData = (extraData && typeof extraData === 'object') ? createNullProtoCopy(extraData) : {};
+  const allFields = [];
+  const content_type_fields = safeContentType?.schema;
   for (const entry of safeEntries) {
-    const entryUid = entry?._metadata?.uid ? `${Path}-${entry?._metadata?.uid}` : Path;
-    let path = Path ? entryUid : entry?.uid;
+    const entryUid = entry?._metadata?.uid ? `${safePath}-${entry?._metadata?.uid}` : safePath;
+    let path = safePath ? entryUid : entry?.uid;
     const fields = [];
     for (const field of content_type_fields) {
       const fieldUid = sanitizeKey(field?.uid);
@@ -184,7 +216,9 @@ const getShopifyFields = async (content_type, entries, type, Path, entryMetaObje
         if (field.multiple) {
           const groupEntries = getSafeOwn(entry, fieldUid);
           if (!Array.isArray(groupEntries)) continue;
-          const createdEntries = await createMetaobjectEntries(field, groupEntries, type, tempPath, entryMetaObject, dataCSLPMapping, extraData);
+          const safeField = sanitizeContentType(field);
+          const safeGroupEntries = groupEntries.map(createNullProtoCopy);
+          const createdEntries = await createMetaobjectEntries(safeField, safeGroupEntries, type, tempPath, entryMetaObject, dataCSLPMapping, extraData);
 
           const groupGids = createdEntries?.map(({ id }) => `"${id}"`);
           const group_key = fieldUid;
@@ -193,7 +227,9 @@ const getShopifyFields = async (content_type, entries, type, Path, entryMetaObje
         } else {
           const groupEntry = getSafeOwn(entry, fieldUid);
           if (groupEntry === undefined || groupEntry === null) continue;
-          const createdEntries = await createMetaobjectEntries(field, [groupEntry], type, tempPath, entryMetaObject, dataCSLPMapping, extraData);
+          const safeField = sanitizeContentType(field);
+          const safeGroupEntry = createNullProtoCopy(groupEntry);
+          const createdEntries = await createMetaobjectEntries(safeField, [safeGroupEntry], type, tempPath, entryMetaObject, dataCSLPMapping, extraData);
 
           const group_key = fieldUid;
           const group_value = createdEntries?.[0]?.id;
@@ -202,7 +238,7 @@ const getShopifyFields = async (content_type, entries, type, Path, entryMetaObje
       } else if (field.data_type === "blocks") {
         if (!Object.prototype.hasOwnProperty.call(entry, fieldUid)) continue;
         const blockContentTypes = field.blocks;
-        const tempType = `${type}-${fieldUid}`;
+        const tempType = `${safeType}-${fieldUid}`;
         const blockGids = [];
 
         // Loop through each block content type
@@ -215,7 +251,7 @@ const getShopifyFields = async (content_type, entries, type, Path, entryMetaObje
 
           const blockEntries = [];
           if (isGlobalField) {
-            globalFieldContentType = await fetchGlobalField(blockContentType?.reference_to, extraData?.hash);
+            globalFieldContentType = await fetchGlobalField(blockContentType?.reference_to, safeExtraData?.hash);
           }
 
           // Loop through each entry and collect block entries
@@ -234,7 +270,7 @@ const getShopifyFields = async (content_type, entries, type, Path, entryMetaObje
           if (blockEntries.length > 0) {
             const contentType = isGlobalField ? globalFieldContentType : blockContentType;
             const blockType = isGlobalField ? "" : tempType;
-            const blockData = await createMetaobjectEntries(contentType, blockEntries, blockType, tempPath, entryMetaObject, dataCSLPMapping, { ...extraData, fieldType: 'block' });
+            const blockData = await createMetaobjectEntries(contentType, blockEntries, blockType, tempPath, safeEntryMetaObject, safeDataCSLPMapping, { ...safeExtraData, fieldType: 'block' });
 
             blockData?.forEach(({ id }) => {
               blockGids.push(`"${id}"`);
@@ -248,17 +284,17 @@ const getShopifyFields = async (content_type, entries, type, Path, entryMetaObje
       } else if (field.data_type === "global_field") {
         if (!Object.prototype.hasOwnProperty.call(entry, fieldUid)) continue;
         const tempPath = `${path}-${fieldUid}`;
-        const globalFieldContentType = await fetchGlobalField(field?.reference_to, extraData?.hash);
+        const globalFieldContentType = await fetchGlobalField(field?.reference_to, safeExtraData?.hash);
 
         if (field.multiple) {
-          const globalFieldResults = await createMetaobjectEntries(globalFieldContentType, entry[fieldUid], "", tempPath, entryMetaObject, dataCSLPMapping, extraData);
+          const globalFieldResults = await createMetaobjectEntries(globalFieldContentType, entry[fieldUid], "", tempPath, safeEntryMetaObject, safeDataCSLPMapping, safeExtraData);
 
           const globalGids = globalFieldResults?.map(({ id }) => `"${id}"`);
           const globalField_key = fieldUid;
           const globalField_value = `[${globalGids?.join(',')}]`;
           fields.push({ key: globalField_key, value: globalField_value });
         } else {
-          const globalFieldResults = await createMetaobjectEntries(globalFieldContentType, [entry[fieldUid]], "", tempPath, entryMetaObject, dataCSLPMapping, extraData);
+          const globalFieldResults = await createMetaobjectEntries(globalFieldContentType, [entry[fieldUid]], "", tempPath, safeEntryMetaObject, safeDataCSLPMapping, safeExtraData);
 
           const globalField_key = fieldUid;
           const globalField_value = globalFieldResults?.[0]?.id
@@ -274,14 +310,14 @@ const getShopifyFields = async (content_type, entries, type, Path, entryMetaObje
             for (const entryData of entry[fieldUid]) {
               const { _content_type_uid, uid } = entryData;
               if (_content_type_uid === contentType) {
-                const csEntry = await getEntry(_content_type_uid, uid, extraData?.hash);
+                const csEntry = await getEntry(_content_type_uid, uid, safeExtraData?.hash);
                 if (!csEntry) throw new Error(`Entry not found for ${_content_type_uid} and ${uid}`);
                 entriesToCreate.push(csEntry);
               }
             }
             if (entriesToCreate.length) {
-              const contentTypeResponse = await fetchContentType(contentType, extraData?.hash);
-              const metaobjectEntries = await createMetaobjectEntries(contentTypeResponse?.content_type, entriesToCreate, entryMetaObject, dataCSLPMapping, extraData);
+              const contentTypeResponse = await fetchContentType(contentType, safeExtraData?.hash);
+              const metaobjectEntries = await createMetaobjectEntries(contentTypeResponse?.content_type, entriesToCreate, safeEntryMetaObject, safeDataCSLPMapping, safeExtraData);
               metaobjectEntries?.forEach((entry) => referenceGids.push(`"${entry?.id}"`));
             }
           }
@@ -296,9 +332,9 @@ const getShopifyFields = async (content_type, entries, type, Path, entryMetaObje
           }
           const { uid: entryUid, _content_type_uid: contentTypeUid } = entryData[0] || {};
 
-          const contentTypeResponse = await fetchContentType(contentTypeUid, extraData?.hash);
-          const csEntry = await getEntry(contentTypeUid, entryUid, extraData?.hash);
-          const metaobjectEntries = await createMetaobjectEntries(contentTypeResponse?.content_type, [csEntry], "", "", entryMetaObject, dataCSLPMapping, extraData);
+          const contentTypeResponse = await fetchContentType(contentTypeUid, safeExtraData?.hash);
+          const csEntry = await getEntry(contentTypeUid, entryUid, safeExtraData?.hash);
+          const metaobjectEntries = await createMetaobjectEntries(contentTypeResponse?.content_type, [csEntry], "", "", safeEntryMetaObject, safeDataCSLPMapping, safeExtraData);
           const metaobjectEntry = metaobjectEntries?.[0];
           const field_key = fieldUid;
           const field_value = metaobjectEntry?.id;
@@ -312,11 +348,11 @@ const getShopifyFields = async (content_type, entries, type, Path, entryMetaObje
 
         if (entryData) {
           if (field?.multiple) {
-            const promises = entryData?.map((file) => getAssetGid(file, extraData?.hash));
+            const promises = entryData?.map((file) => getAssetGid(file, safeExtraData?.hash));
             const gids = await Promise.all(promises);
             field_value = `[${gids?.map(gid => `${gid}`).join(',')}]`;
           } else {
-            const gid = await getAssetGid(entryData, extraData?.hash);
+            const gid = await getAssetGid(entryData, safeExtraData?.hash);
             field_value = `${gid}`;
           }
         } else {
@@ -377,12 +413,12 @@ const getShopifyFields = async (content_type, entries, type, Path, entryMetaObje
         const field_key = fieldUid;
         const field_value = `${entry[field_key] ?? ""}`;
         fields.push({ key: field_key, value: field_value });
-        saveDataInObject(type, path, { key: field_key, value: field_value }, field.data_type, entryMetaObject, extraData);
+        saveDataInObject(safeType, path, { key: field_key, value: field_value }, field.data_type, safeEntryMetaObject, safeExtraData);
         if (entry?.$?.[field_key]?.["data-cslp"] && entry?.$?.[field_key]?.["data-cslp"] !== "") {
           const rawMapKey = (entry.$[field_key]["data-cslp"]).replace(".", "_");
           const safeMapKey = sanitizeKey(rawMapKey);
           if (safeMapKey) {
-            dataCSLPMapping[safeMapKey] = `${type}.${path}.$.${field_key}`;
+            safeDataCSLPMapping[safeMapKey] = `${safeType}.${path}.$.${field_key}`;
           }
         }
       }
