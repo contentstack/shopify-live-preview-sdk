@@ -2,6 +2,36 @@ import 'dotenv/config';
 import lodash from 'lodash';
 const { isEmpty } = lodash;
 
+// Prevent prototype pollution by disallowing unsafe keys
+const isUnsafeKey = (key) => {
+  return typeof key !== 'string' ||
+    key === '__proto__' ||
+    key === 'prototype' ||
+    key === 'constructor';
+};
+
+const sanitizeKey = (key) => {
+  if (isUnsafeKey(key)) return null;
+  return key;
+};
+
+const getSafeOwn = (obj, key) => {
+  const k = sanitizeKey(key);
+  if (!k || obj === null || typeof obj !== 'object') return undefined;
+  return Object.prototype.hasOwnProperty.call(obj, k) ? obj[k] : undefined;
+};
+
+const createNullProtoCopy = (obj) => {
+  if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) return obj;
+  const safe = Object.create(null);
+  for (const [k, v] of Object.entries(obj)) {
+    const sk = sanitizeKey(k);
+    if (!sk) continue;
+    safe[sk] = v;
+  }
+  return safe;
+};
+
 
 const CONTENTSTACK_DELIVERY_TOKEN = process.env.CONTENTSTACK_DELIVERY_TOKEN;
 const CONTENTSTACK_PREVIEW_TOKEN = process.env.CONTENTSTACK_PREVIEW_TOKEN;
@@ -139,37 +169,47 @@ const fetchContentType = async (contentTypeUid, hash) => {
 const getShopifyFields = async (content_type, entries, type, Path, entryMetaObject, dataCSLPMapping, extraData) => {
   const allFields = [];
   const content_type_fields = content_type?.schema;
-  for (const entry of entries) {
+  // Sanitize inbound entries to avoid prototype pollution via malicious keys
+  const safeEntries = Array.isArray(entries) ? entries.map(createNullProtoCopy) : [];
+  for (const entry of safeEntries) {
     const entryUid = entry?._metadata?.uid ? `${Path}-${entry?._metadata?.uid}` : Path;
     let path = Path ? entryUid : entry?.uid;
     const fields = [];
     for (const field of content_type_fields) {
+      const fieldUid = sanitizeKey(field?.uid);
+      if (!fieldUid) continue;
       if (field.data_type === "group") {
-        if (entry[field.uid] === undefined) continue;
-        const tempPath = `${path}-${field.uid}`;
+        if (!Object.prototype.hasOwnProperty.call(entry, fieldUid)) continue;
+        const tempPath = `${path}-${fieldUid}`;
         if (field.multiple) {
-          const createdEntries = await createMetaobjectEntries(field, entry[field.uid], type, tempPath, entryMetaObject, dataCSLPMapping, extraData);
+          const groupEntries = getSafeOwn(entry, fieldUid);
+          if (!Array.isArray(groupEntries)) continue;
+          const createdEntries = await createMetaobjectEntries(field, groupEntries, type, tempPath, entryMetaObject, dataCSLPMapping, extraData);
 
           const groupGids = createdEntries?.map(({ id }) => `"${id}"`);
-          const group_key = field?.uid;
+          const group_key = fieldUid;
           const group_value = `[${groupGids?.join(',')}]`;
           fields.push({ key: group_key, value: group_value });
         } else {
-          const createdEntries = await createMetaobjectEntries(field, [entry[field.uid]], type, tempPath, entryMetaObject, dataCSLPMapping, extraData);
+          const groupEntry = getSafeOwn(entry, fieldUid);
+          if (groupEntry === undefined || groupEntry === null) continue;
+          const createdEntries = await createMetaobjectEntries(field, [groupEntry], type, tempPath, entryMetaObject, dataCSLPMapping, extraData);
 
-          const group_key = field?.uid;
+          const group_key = fieldUid;
           const group_value = createdEntries?.[0]?.id;
           fields.push({ key: group_key, value: group_value });
         }
       } else if (field.data_type === "blocks") {
-        if (entry[field.uid] === undefined) continue;
+        if (!Object.prototype.hasOwnProperty.call(entry, fieldUid)) continue;
         const blockContentTypes = field.blocks;
-        const tempType = `${type}-${field.uid}`;
+        const tempType = `${type}-${fieldUid}`;
         const blockGids = [];
 
         // Loop through each block content type
         for (const blockContentType of blockContentTypes) {
-          const tempPath = `${path}-${field.uid}-${blockContentType.uid}`;
+          const blockContentTypeUid = sanitizeKey(blockContentType?.uid);
+          if (!blockContentTypeUid) continue;
+          const tempPath = `${path}-${fieldUid}-${blockContentTypeUid}`;
           const isGlobalField = !isEmpty(blockContentType?.reference_to);
           let globalFieldContentType = null;
 
@@ -179,11 +219,11 @@ const getShopifyFields = async (content_type, entries, type, Path, entryMetaObje
           }
 
           // Loop through each entry and collect block entries
-          const entryBlockEntries = entry[field.uid];
+          const entryBlockEntries = entry[fieldUid];
 
           // Loop through each block entry object
           for (const blockEntryObject of entryBlockEntries) {
-            const blockEntry = blockEntryObject[blockContentType?.uid];
+            const blockEntry = blockEntryObject[blockContentTypeUid];
 
             if (blockEntry) {
               blockEntries.push(blockEntry);
@@ -202,36 +242,36 @@ const getShopifyFields = async (content_type, entries, type, Path, entryMetaObje
           }
         }
 
-        const block_key = field?.uid;
+        const block_key = fieldUid;
         const block_value = `[${blockGids.join(',')}]`;
         fields.push({ key: block_key, value: block_value });
       } else if (field.data_type === "global_field") {
-        if (entry[field.uid] === undefined) continue;
-        const tempPath = `${path}-${field.uid}`;
+        if (!Object.prototype.hasOwnProperty.call(entry, fieldUid)) continue;
+        const tempPath = `${path}-${fieldUid}`;
         const globalFieldContentType = await fetchGlobalField(field?.reference_to, extraData?.hash);
 
         if (field.multiple) {
-          const globalFieldResults = await createMetaobjectEntries(globalFieldContentType, entry[field.uid], "", tempPath, entryMetaObject, dataCSLPMapping, extraData);
+          const globalFieldResults = await createMetaobjectEntries(globalFieldContentType, entry[fieldUid], "", tempPath, entryMetaObject, dataCSLPMapping, extraData);
 
           const globalGids = globalFieldResults?.map(({ id }) => `"${id}"`);
-          const globalField_key = field?.uid;
+          const globalField_key = fieldUid;
           const globalField_value = `[${globalGids?.join(',')}]`;
           fields.push({ key: globalField_key, value: globalField_value });
         } else {
-          const globalFieldResults = await createMetaobjectEntries(globalFieldContentType, [entry[field.uid]], "", tempPath, entryMetaObject, dataCSLPMapping, extraData);
+          const globalFieldResults = await createMetaobjectEntries(globalFieldContentType, [entry[fieldUid]], "", tempPath, entryMetaObject, dataCSLPMapping, extraData);
 
-          const globalField_key = field?.uid;
+          const globalField_key = fieldUid;
           const globalField_value = globalFieldResults?.[0]?.id
           fields.push({ key: globalField_key, value: globalField_value });
         }
       } else if (field.data_type === "reference") {
-        if (entry[field.uid] === undefined) continue;
+        if (!Object.prototype.hasOwnProperty.call(entry, fieldUid)) continue;
 
         if (field?.field_metadata?.ref_multiple) {
           const referenceGids = [];
           for (const contentType of field.reference_to || []) {
             const entriesToCreate = [];
-            for (const entryData of entry[field.uid]) {
+            for (const entryData of entry[fieldUid]) {
               const { _content_type_uid, uid } = entryData;
               if (_content_type_uid === contentType) {
                 const csEntry = await getEntry(_content_type_uid, uid, extraData?.hash);
@@ -245,13 +285,13 @@ const getShopifyFields = async (content_type, entries, type, Path, entryMetaObje
               metaobjectEntries?.forEach((entry) => referenceGids.push(`"${entry?.id}"`));
             }
           }
-          const field_key = field?.uid;
+          const field_key = fieldUid;
           const field_value = `[${referenceGids.join(',')}]`;
           fields.push({ key: field_key, value: field_value });
         } else {
-          const entryData = entry[field.uid];
+          const entryData = entry[fieldUid];
           if (isEmpty(entryData)) {
-            fields.push({ key: field?.uid, value: null });
+            fields.push({ key: fieldUid, value: null });
             continue;
           }
           const { uid: entryUid, _content_type_uid: contentTypeUid } = entryData[0] || {};
@@ -260,14 +300,14 @@ const getShopifyFields = async (content_type, entries, type, Path, entryMetaObje
           const csEntry = await getEntry(contentTypeUid, entryUid, extraData?.hash);
           const metaobjectEntries = await createMetaobjectEntries(contentTypeResponse?.content_type, [csEntry], "", "", entryMetaObject, dataCSLPMapping, extraData);
           const metaobjectEntry = metaobjectEntries?.[0];
-          const field_key = field?.uid;
+          const field_key = fieldUid;
           const field_value = metaobjectEntry?.id;
           fields.push({ key: field_key, value: field_value });
         }
       } else if (field.data_type === "file") {
         // TODO: Handle file field
-        if (entry[field.uid] === undefined) continue;
-        const entryData = entry[field?.uid];
+        if (!Object.prototype.hasOwnProperty.call(entry, fieldUid)) continue;
+        const entryData = entry[fieldUid];
         let field_value = "";
 
         if (entryData) {
@@ -283,10 +323,10 @@ const getShopifyFields = async (content_type, entries, type, Path, entryMetaObje
           continue
         }
 
-        fields.push({ key: field?.uid, value: field_value });
+        fields.push({ key: fieldUid, value: field_value });
       } else if (field.data_type === "isodate") {
-        if (entry[field.uid] === undefined) continue;
-        const entryData = entry[field.uid];
+        if (!Object.prototype.hasOwnProperty.call(entry, fieldUid)) continue;
+        const entryData = entry[fieldUid];
         let field_value = '';
 
         if (!isEmpty(entryData)) {
@@ -302,13 +342,13 @@ const getShopifyFields = async (content_type, entries, type, Path, entryMetaObje
           }
         }
 
-        fields.push({ key: field?.uid, value: field_value });
+        fields.push({ key: fieldUid, value: field_value });
       } else if (field.data_type === 'link') {
-        if (entry[field.uid] === undefined) continue;
-        const field_key = field?.uid;
+        if (!Object.prototype.hasOwnProperty.call(entry, fieldUid)) continue;
+        const field_key = fieldUid;
 
         if (field.multiple) {
-          const field_values = entry[field.uid]
+          const field_values = entry[fieldUid]
             .map((link) => {
               if (!link.title || !link.href) {
                 return null;
@@ -320,7 +360,7 @@ const getShopifyFields = async (content_type, entries, type, Path, entryMetaObje
           const field_value = field_values.length > 0 ? JSON.stringify(field_values) : "";
           fields.push({ key: field_key, value: field_value });
         } else {
-          const link = entry[field.uid];
+          const link = entry[fieldUid];
           const field_value = (link.title && link.href)
             ? JSON.stringify({ text: link.title, url: link.href })
             : "";
@@ -328,17 +368,23 @@ const getShopifyFields = async (content_type, entries, type, Path, entryMetaObje
         }
       }
       else if (field.data_type === 'json') {
-        if (entry[field.uid] === undefined) continue;
-        const field_key = field?.uid;
-        const field_value = JSON.stringify(entry[field.uid]);
+        if (!Object.prototype.hasOwnProperty.call(entry, fieldUid)) continue;
+        const field_key = fieldUid;
+        const field_value = JSON.stringify(entry[fieldUid]);
         fields.push({ key: field_key, value: field_value });
       }
       else {
-        const field_key = field?.uid;
+        const field_key = fieldUid;
         const field_value = `${entry[field_key] ?? ""}`;
         fields.push({ key: field_key, value: field_value });
         saveDataInObject(type, path, { key: field_key, value: field_value }, field.data_type, entryMetaObject, extraData);
-        if (entry?.$?.[field_key]?.["data-cslp"] && entry?.$?.[field_key]?.["data-cslp"] !== "") dataCSLPMapping[(entry.$[field_key]["data-cslp"]).replace(".", "_")] = `${type}.${path}.$.${field_key}`;
+        if (entry?.$?.[field_key]?.["data-cslp"] && entry?.$?.[field_key]?.["data-cslp"] !== "") {
+          const rawMapKey = (entry.$[field_key]["data-cslp"]).replace(".", "_");
+          const safeMapKey = sanitizeKey(rawMapKey);
+          if (safeMapKey) {
+            dataCSLPMapping[safeMapKey] = `${type}.${path}.$.${field_key}`;
+          }
+        }
       }
     }
     allFields.push({ handle: path, fields });
@@ -357,23 +403,27 @@ const createMetaobjectEntries = async (content_type, entries, type = "", path = 
 }
 
 const saveDataInObject = (type, path, data, dataType, entryMetaObject, extraData) => {
-  if (!entryMetaObject[type]) entryMetaObject[type] = {};
+  const typeKey = sanitizeKey(type);
+  const pathKey = sanitizeKey(path);
+  const dataKey = sanitizeKey(data?.key);
+  if (!typeKey || !pathKey || !dataKey) return;
+  if (!entryMetaObject[typeKey]) entryMetaObject[typeKey] = Object.create(null);
   if (extraData?.fieldType) {
-    entryMetaObject[type] = { ...entryMetaObject[type], _field_type: extraData.fieldType };
+    entryMetaObject[typeKey] = { ...entryMetaObject[typeKey], _field_type: extraData.fieldType };
   }
-  if (!entryMetaObject[type][path]) entryMetaObject[type][path] = {};
-  if (!entryMetaObject[type].values) entryMetaObject[type].values = [];
+  if (!entryMetaObject[typeKey][pathKey]) entryMetaObject[typeKey][pathKey] = {};
+  if (!entryMetaObject[typeKey].values) entryMetaObject[typeKey].values = [];
   let updatedData = null;
-  if(!isEmpty(entryMetaObject[type][path])) {
+  if(!isEmpty(entryMetaObject[typeKey][pathKey])) {
     updatedData = {
-      ...(entryMetaObject[type][path]?.toJSON() || {}), [data.key]: data.value
+      ...(entryMetaObject[typeKey][pathKey]?.toJSON() || {}), [dataKey]: data.value
     }
   } else {
     updatedData = {
-      [data.key]: data.value
+      [dataKey]: data.value
     }
   }
-  entryMetaObject[type][path] = { 
+  entryMetaObject[typeKey][pathKey] = { 
     ...updatedData,
     get value() {
       return updatedData;
@@ -383,8 +433,8 @@ const saveDataInObject = (type, path, data, dataType, entryMetaObject, extraData
     },
     get system() {
       return {
-        type: `${type}`,
-        handle: path,
+        type: `${typeKey}`,
+        handle: pathKey,
         id: null,
         url: null
       }
@@ -395,11 +445,14 @@ const saveDataInObject = (type, path, data, dataType, entryMetaObject, extraData
 const getUpdatedProductMetafields = async (currentMetafields, contentType, entry, { ctUid, entryUid, hash }) => {
   if (!currentMetafields || typeof currentMetafields !== 'object') return;
   const updatedMetafields = {};
-  for (const [key, value] of Object.entries(currentMetafields)) {
+  const safeCurrent = createNullProtoCopy(currentMetafields);
+  for (const [rawKey, value] of Object.entries(safeCurrent)) {
+    const key = sanitizeKey(rawKey);
+    if (!key) continue;
 
     const keyFieldType = contentType[key] ? contentType[key].data_type : null;
     if (!keyFieldType) {
-      const cleanValue = entry[key] ?? value;
+      const cleanValue = Object.prototype.hasOwnProperty.call(entry, key) ? entry[key] : value;
 
       const systemData = value?.___system || {
         type: `${ctUid}-${key}`,
@@ -457,7 +510,7 @@ const getUpdatedProductMetafields = async (currentMetafields, contentType, entry
     }
 
     if (keyFieldType === 'blocks') {
-      const blockData = entry[key];
+      const blockData = Object.prototype.hasOwnProperty.call(entry, key) ? entry[key] : [];
       const finalBlockData = [];
       for (const block of blockData) {
         for (const blockData of Object.entries(block)) {
@@ -547,7 +600,7 @@ const getUpdatedProductMetafields = async (currentMetafields, contentType, entry
       };
 
     } else if(keyFieldType === 'file'){
-      const fileData = entry[key];
+      const fileData = Object.prototype.hasOwnProperty.call(entry, key) ? entry[key] : [];
       const fileUrls = fileData?.map((file) => file?.url);
       const fileDataWithSystem = {
         ...fileData,
@@ -566,7 +619,7 @@ const getUpdatedProductMetafields = async (currentMetafields, contentType, entry
     } else if(keyFieldType === "reference"){
       const referenceSchema = contentType[key];
       if(referenceSchema.multiple){
-        const refUids = entry[key];
+        const refUids = Object.prototype.hasOwnProperty.call(entry, key) ? entry[key] : [];
         const referenceData = await refUids?.map( async (refUid) => {
           const refEntryData = await getEntry(refUid._content_type_uid, refUid.uid, hash);
           return refEntryData;
@@ -631,7 +684,8 @@ const getUpdatedProductMetafields = async (currentMetafields, contentType, entry
           }
         };
       } else {
-        const refUid = entry[key].length ? entry[key][0] : entry[key];
+        const rawRef = Object.prototype.hasOwnProperty.call(entry, key) ? entry[key] : [];
+        const refUid = Array.isArray(rawRef) && rawRef.length ? rawRef[0] : rawRef;
         const referenceData = await getEntry(refUid._content_type_uid, refUid.uid, hash);
         const currentMetafieldsData = currentMetafields[key];
         const systemData = currentMetafieldsData?._system;
@@ -660,14 +714,14 @@ const getUpdatedProductMetafields = async (currentMetafields, contentType, entry
         }
       }
     } else {
-      const keyData = entry[key];
+      const keyData = Object.prototype.hasOwnProperty.call(entry, key) ? entry[key] : undefined;
       const keyDataWithSystem = {
         ...keyData,
         toJSON() {
           return keyData
         },
         get system() {
-          return currentMetafields[key].___system || null
+          return safeCurrent[key].___system || null
         }
       }
       updatedMetafields[key] = {
@@ -678,31 +732,38 @@ const getUpdatedProductMetafields = async (currentMetafields, contentType, entry
           return keyData
         },
         get system() {
-          return currentMetafields[key].___system || null
+          return safeCurrent[key].___system || null
         }
       }
     }
   }
-  return { ...currentMetafields, ...updatedMetafields };
+  // Rebuild a sanitized copy of currentMetafields to avoid propagating unsafe keys
+  return { ...safeCurrent, ...updatedMetafields };
 }
 
 const getUpdatedMetaobject = async (currentMetaobjects, keyBasedCt, entry, { ctUid, hash }) => {
   if (!currentMetaobjects || typeof currentMetaobjects !== 'object') return;
-  const updatedMetaobjects = {};
+  const updatedMetaobjects = Object.create(null);
   const dataCSLPMapping = {};
   const normalContentType = {
     schema: Object.values(keyBasedCt),
     uid: ctUid,
   }
   await createMetaobjectEntries(normalContentType, [entry], "", "", updatedMetaobjects, dataCSLPMapping, { dataCSLPMapping: dataCSLPMapping, hash });
-  for (const [type, typeValue] of Object.entries(updatedMetaobjects)) {
-    for (const [path, pathValue] of Object.entries(typeValue)) {
+  for (const [rawType, typeValue] of Object.entries(updatedMetaobjects)) {
+    const type = sanitizeKey(rawType);
+    if (!type) continue;
+    for (const [rawPath, pathValue] of Object.entries(typeValue)) {
+      const path = sanitizeKey(rawPath);
+      if (!path) continue;
       if (path !== '_field_type' && path !== 'values') {
         if (!updatedMetaobjects[type].values) updatedMetaobjects[type].values = [{ ...(pathValue.toJSON()) }];
         else updatedMetaobjects[type].values.push({ ...(pathValue.toJSON()) });
       }
     }
-    currentMetaobjects[type] = updatedMetaobjects[type];
+    const safeType = sanitizeKey(type);
+    if (!safeType) continue;
+    currentMetaobjects[safeType] = updatedMetaobjects[type];
   }
   return {
     currentMetaobjects,
@@ -712,9 +773,11 @@ const getUpdatedMetaobject = async (currentMetaobjects, keyBasedCt, entry, { ctU
 
 const createContentTypeKeyBased = (content_type) => {
   try {
-    const keyBasedCt = {};
+    const keyBasedCt = Object.create(null);
     for (const field of content_type) {
-      keyBasedCt[field.uid] = field;
+      const uid = sanitizeKey(field?.uid);
+      if (!uid) continue;
+      keyBasedCt[uid] = field;
     }
     return keyBasedCt;
   } catch (error) {
