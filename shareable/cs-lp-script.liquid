@@ -1,5 +1,5 @@
 {% assign live_preview_middleware_url = 'your_middleware_url' %}
-{% comment %} NOTE: Do not add a trailing slash (/) at the end of the live_preview_middleware_url value. {% endcomment %}
+{% comment %} A trailing slash (/) on live_preview_middleware_url is handled automatically. {% endcomment %}
 {% assign middleware_preview_data_route = '/get-preview-data' %}
 
 {%- capture settings_json -%}
@@ -82,9 +82,24 @@
       }
 
     var sendPreviewRequest = cs_throttle((theme_variable, livePreviewInfo) => {
-        {%- assign trimmed_url = live_preview_middleware_url | replace: '/$', '' -%}
-        {%- assign trimmed_route = middleware_preview_data_route | replace: '^/', '' -%}
-        {%- assign preview_data_url = trimmed_url | append: trimmed_route -%}
+        {%- comment -%}
+          Build the request URL robustly. Liquid's `replace` is literal-substring only
+          (no regex anchors), so the old `replace: '/$'` never stripped a real trailing
+          slash. Strip exactly one trailing slash from the customer-supplied base URL and
+          guarantee a single leading slash on the route, then join.
+        {%- endcomment -%}
+        {%- assign base_url = live_preview_middleware_url | strip -%}
+        {%- assign base_last_char = base_url | slice: -1 -%}
+        {%- if base_last_char == '/' -%}
+          {%- assign base_len = base_url.size | minus: 1 -%}
+          {%- assign base_url = base_url | slice: 0, base_len -%}
+        {%- endif -%}
+        {%- assign preview_route = middleware_preview_data_route | strip -%}
+        {%- assign route_first_char = preview_route | slice: 0 -%}
+        {%- unless route_first_char == '/' -%}
+          {%- assign preview_route = '/' | append: preview_route -%}
+        {%- endunless -%}
+        {%- assign preview_data_url = base_url | append: preview_route -%}
         fetch({{ preview_data_url | json }}, {
           method: "POST",
           headers: {
