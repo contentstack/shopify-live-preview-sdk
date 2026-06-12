@@ -1,8 +1,8 @@
 {% if metaobject_system.type %}
   {% assign cs_type = metaobject_system.type %}
   {% assign cs_handle = metaobject_system.handle %}
-{% elsif metaobject_system != blank %}
-  {% assign first_item = metaobject_system.first %}
+{% else %}
+  {% assign first_item = metaobject_system | first %}
   {% if first_item.system %}
     {% assign cs_type = first_item.system.type %}
     {% assign cs_handle = first_item.system.handle %}
