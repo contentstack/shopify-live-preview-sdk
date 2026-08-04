@@ -18,7 +18,7 @@ process.env = {
 
 // Dynamic import after env vars are set
 let setupModule;
-let fetchData, createMetaobjectEntries, createContentTypeKeyBased, getUpdatedProductMetafields, getUpdatedMetaobject;
+let fetchData, createMetaobjectEntries, createContentTypeKeyBased;
 
 // Mock global.fetch is provided by jest.setup.js, but ensure we can spy/override per test
 const originalFetch = global.fetch;
@@ -28,8 +28,6 @@ beforeAll(async () => {
     fetchData = setupModule.fetchData;
     createMetaobjectEntries = setupModule.createMetaobjectEntries;
     createContentTypeKeyBased = setupModule.createContentTypeKeyBased;
-    getUpdatedProductMetafields = setupModule.getUpdatedProductMetafields;
-    getUpdatedMetaobject = setupModule.getUpdatedMetaobject;
 });
 
 afterAll(() => {
@@ -68,11 +66,13 @@ describe('Setup Service (src/setup/index.js)', () => {
         });
     });
 
-    it('getUpdatedProductMetafields should handle invalid input', async () => {
-        const result = await getUpdatedProductMetafields(null, {}, {}, { ctUid: 'ct', entryUid: 'e', hash: 'h' });
-        expect(result).toBeUndefined();
-    });
+    // The invalid-input contract for getUpdatedProductMetafields now lives in
+    // ./getUpdatedProductMetafields.test.js alongside the rest of that function's table.
 
+    // NOTE: resolving to undefined is the CURRENT behaviour, not the intended one —
+    // createMetaobjectEntries drops getShopifyFields' return value (setup/index.js:431-439),
+    // which is the root cause of the "[undefined]" gids tracked in Q1. The intended
+    // contract is asserted as an it.failing in ./getUpdatedMetaobject.test.js.
     it('createMetaobjectEntries should resolve without errors for simple schema', async () => {
         const ct = { uid: 'product', schema: [{ uid: 'title', data_type: 'text' }] };
         const entries = [{ uid: 'u1', title: 'T', _metadata: { uid: 'm1' } }];
