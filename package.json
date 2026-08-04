@@ -32,10 +32,10 @@
   "license": "MIT",
   "dependencies": {
     "@octokit/rest": "^21.1.1",
-    "adm-zip": "^0.5.10",
-    "axios": "^1.15.2",
+    "adm-zip": "^0.5.18",
+    "axios": "^1.18.0",
     "express": "^4.18.3",
-    "liquidjs": "^10.25.7"
+    "liquidjs": "^10.27.1"
   },
   "devDependencies": {
     "@jest/globals": "^29.7.0",
