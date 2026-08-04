@@ -427,7 +427,7 @@ describe('render tag', () => {
     await expect(engine.parseAndRender('{% render %}', {})).rejects.toThrow();
   });
 
-  // The unquoted-identifier branch is currently unreachable. Liquid/index.ts:309 calls
+  // The unquoted-identifier branch is currently unreachable. Liquid/index.ts:496 calls
   // `ctx.get(this.fileExpression)` with a STRING, but liquidjs 10's Context.get expects a
   // path ARRAY — get('block') resolves to undefined while get(['block']) returns the
   // value. So every identifier form throws "Could not resolve filename", including the
@@ -755,7 +755,7 @@ describe('known bugs (it.failing repros — flip green when fixed)', () => {
     expect(result).toBe('2026');
   });
 
-  // The json filter is registered twice (Liquid/index.ts:408 and :435). The second
+  // The json filter is registered twice (Liquid/index.ts:595 and :622). The second
   // registration wins, so the try/catch in the first — which would return '{}' — is dead
   // and a circular structure throws instead.
   it.failing('json should fall back to {} for a circular structure', async () => {
