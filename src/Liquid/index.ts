@@ -14,8 +14,9 @@ const __dirname = path.dirname(__filename);
 // with a path separator or traversal segment is rejected before it can resolve a file.
 const SECTION_NAME_PATTERN = /^[\w-]+$/;
 
-// Fallback for `{% paginate ... by <n> %}` when n is missing or not a usable page size. Themes read
-// `paginate.page_size` arithmetically, so zero or negative must never reach the stub.
+// Fallback for `{% paginate ... by <n> %}`. Only a literal `<n>` is read — `by section.settings.n`
+// and any other expression are not resolved and land here. Themes read `paginate.page_size`
+// arithmetically, so zero, negative, and out-of-range must never reach the stub.
 const DEFAULT_PAGINATE_PAGE_SIZE = 50;
 
 /**
@@ -43,11 +44,16 @@ function registerRawContentBlockTag(engine: Liquid, tagName: string, renderCaptu
             throw new Error(`tag {% ${tagName} %} not closed`);
         },
         render() {
-            return renderCapturedText(this.capturedTokensText.join('\n'));
+            // Joined with no separator: getText() slices carry the body's original whitespace, so
+            // this reproduces the source byte for byte. A separator here would inject newlines into
+            // JS/CSS bodies, where whitespace is semantic.
+            return renderCapturedText(this.capturedTokensText.join(''));
         },
     });
 
-    // Dummy registration for end tag to prevent "not found" errors
+    // A matched block consumes its own closer during `parse` above, so this registration is only
+    // ever reached by a stray unmatched `{% end<tagName> %}` — it turns that into empty output
+    // instead of an "unknown tag" parse error.
     engine.registerTag(endTagName, {
         parse() { },
         render() {
@@ -171,12 +177,14 @@ export function setupLiquidEngine(options: LiquidEngineOptions = {}): Liquid {
     registerRawContentBlockTag(engine, 'javascript', (capturedText) => `<script>${capturedText}</script>`);
     registerRawContentBlockTag(engine, 'stylesheet', (capturedText) => `<style>${capturedText}</style>`);
 
-    // Theme blocks need section/block settings the preview payload does not carry, so this renders
-    // nothing. Its arguments are deliberately never read.
+    // Theme blocks need section/block settings the preview payload does not carry, so this emits a
+    // placeholder comment instead of the real content — that way an empty region in the preview is
+    // explainable from view-source rather than looking like a silent render failure. Its arguments
+    // are deliberately never read.
     engine.registerTag('content_for', {
         parse() { },
         render() {
-            return '';
+            return '<!-- theme block content omitted in preview -->';
         },
     });
 
@@ -193,10 +201,27 @@ export function setupLiquidEngine(options: LiquidEngineOptions = {}): Liquid {
             }
 
             try {
-                return await this.liquid.renderFile(`sections/${this.sectionName}.liquid`, ctx.getAll());
+                // The section gets its own `section` object. Without this the caller's `section`
+                // leaks in through the spread context and the rendered section reports the parent's
+                // id and settings as its own.
+                return await this.liquid.renderFile(`sections/${this.sectionName}.liquid`, {
+                    ...ctx.getAll(),
+                    section: { id: this.sectionName, settings: {}, blocks: [] },
+                });
             } catch (err) {
-                console.error(`Error rendering section '${this.sectionName}':`, err.message);
-                return `<!-- section '${this.sectionName}' not found in preview -->`;
+                // A missing section file throws a plain Error carrying code 'ENOENT' at the top
+                // level. Anything else — a syntax error in the section, or a RenderError whose
+                // originalError is ENOENT because a {% render %} *inside* the section is missing —
+                // is a real failure and must not be reported as an absent section.
+                const isSectionFileMissing = err?.code === 'ENOENT';
+
+                if (isSectionFileMissing) {
+                    console.error(`Section '${this.sectionName}' not found:`, err?.message);
+                    return `<!-- section '${this.sectionName}' not found in preview -->`;
+                }
+
+                console.error(`Error rendering section '${this.sectionName}':`, err?.message);
+                return `<!-- section '${this.sectionName}' failed to render in preview -->`;
             }
         },
     });
@@ -223,8 +248,12 @@ export function setupLiquidEngine(options: LiquidEngineOptions = {}): Liquid {
 
             const pageSizeMatch = (tagToken.args ?? '').match(/by\s+(\d+)/);
             const requestedPageSize = pageSizeMatch ? parseInt(pageSizeMatch[1], 10) : NaN;
-            this.pageSize = Number.isFinite(requestedPageSize) && requestedPageSize > 0
-                ? Math.floor(requestedPageSize)
+            // The upper bound is load-bearing, not defensive, because the capture is unbounded `\d+`:
+            // past 2^53 the value is no longer an exact integer, past 1e21 it stringifies as `1e+21`,
+            // and past ~1e309 it is Infinity. A theme printing `paginate.page_size` emits whichever
+            // of those it gets, verbatim. `Number.isFinite` alone only catches the last case.
+            this.pageSize = Number.isSafeInteger(requestedPageSize) && requestedPageSize > 0
+                ? requestedPageSize
                 : DEFAULT_PAGINATE_PAGE_SIZE;
 
             // 'template' (not 'token') is what yields parsed templates — a 'token' handler
@@ -245,6 +274,9 @@ export function setupLiquidEngine(options: LiquidEngineOptions = {}): Liquid {
         // A generator render (rather than async) is required here: renderTemplates is a generator,
         // so the scope pushed below must stay on the context until the engine has driven it.
         render: function* (ctx, emitter) {
+            // Self-consistent for a single page rather than accurate: `items` mirrors `page_size`
+            // because Shopify's real total-across-all-pages is unknowable in preview, and a theme
+            // computing e.g. `items | minus: page_size` must not go negative.
             const previewPaginateStub = {
                 current_page: 1,
                 current_offset: 0,
@@ -265,7 +297,9 @@ export function setupLiquidEngine(options: LiquidEngineOptions = {}): Liquid {
         },
     });
 
-    // Custom Tag: {% endpaginate %} - No need to render anything
+    // A matched `{% paginate %}` block consumes its own closer while parsing, so this registration is
+    // only ever reached by a stray unmatched `{% endpaginate %}` — it turns that into empty output
+    // instead of an "unknown tag" parse error.
     engine.registerTag('endpaginate', {
         render: function () {
             return '';
