@@ -17,6 +17,7 @@ export default {
   },
   setupFilesAfterEnv: ['./jest.setup.js'],
   testMatch: ['**/__tests__/**/*.test.ts', '**/__tests__/**/*.test.js'],
+  testPathIgnorePatterns: ['/node_modules/', '/dist/'],
   collectCoverage: true,
   coverageDirectory: 'coverage',
   coverageReporters: ['text', 'lcov'],
