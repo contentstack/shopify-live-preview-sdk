@@ -523,9 +523,72 @@ describe('getUpdatedMetaobject', () => {
 
       expect(result.currentMetaobjects).toEqual({});
     });
+
+    // VP-2702: the Preview API returns null for an empty modular-blocks field.
+    it('treats a null blocks field as empty and still refreshes the other fields', async () => {
+      const result = await getUpdatedMetaobject(
+        {},
+        keyBasedFrom([
+          { uid: 'title', data_type: 'text' },
+          {
+            uid: 'sections',
+            data_type: 'blocks',
+            blocks: [{ uid: 'hero', schema: [{ uid: 'heading', data_type: 'text' }] }],
+          },
+        ]),
+        { uid: 'entry_1', title: 'Fresh', sections: null },
+        options
+      );
+
+      expect(result.currentMetaobjects.product_ct.entry_1.toJSON()).toEqual({ title: 'Fresh' });
+    });
   });
 
   describe('file field', () => {
+    // VP-2702: images vanished on edit because the file value never reached metaobjects[type].
+    it('records the asset url so the theme can render it', async () => {
+      jest.spyOn(global, 'fetch').mockImplementation(
+        stubCdaFetch([['/v3/assets/', { asset: { _metadata: { extensions: {} } } }]])
+      );
+
+      const result = await getUpdatedMetaobject(
+        {},
+        keyBasedFrom([
+          { uid: 'headline', data_type: 'text' },
+          { uid: 'image', data_type: 'file' },
+        ]),
+        { uid: 'entry_1', headline: 'Hi', image: { uid: 'asset_1', url: 'https://images.test/a.png' } },
+        options
+      );
+
+      expect(result.currentMetaobjects.product_ct.values).toEqual([
+        { headline: 'Hi', image: 'https://images.test/a.png' },
+      ]);
+    });
+
+    it('records every asset url for a multiple file field', async () => {
+      jest.spyOn(global, 'fetch').mockImplementation(
+        stubCdaFetch([['/v3/assets/', { asset: { _metadata: { extensions: {} } } }]])
+      );
+
+      const result = await getUpdatedMetaobject(
+        {},
+        keyBasedFrom([{ uid: 'gallery', data_type: 'file', multiple: true }]),
+        {
+          uid: 'entry_1',
+          gallery: [
+            { uid: 'asset_1', url: 'https://images.test/1.png' },
+            { uid: 'asset_2', url: 'https://images.test/2.png' },
+          ],
+        },
+        options
+      );
+
+      expect(result.currentMetaobjects.product_ct.entry_1.toJSON()).toEqual({
+        gallery: ['https://images.test/1.png', 'https://images.test/2.png'],
+      });
+    });
+
     it('resolves the shopify asset gid through the assets endpoint', async () => {
       const fetchSpy = jest.spyOn(global, 'fetch').mockImplementation(
         stubCdaFetch([

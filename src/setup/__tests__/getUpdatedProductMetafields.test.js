@@ -213,6 +213,20 @@ describe('getUpdatedProductMetafields', () => {
       });
     });
 
+    // VP-2702: the Preview API returns null for an empty modular-blocks field.
+    it('emits the placeholder instead of throwing when the blocks field is null', async () => {
+      const result = await getUpdatedProductMetafields(
+        { sections: [] },
+        blocksKeyBasedCt(),
+        { sections: null },
+        options
+      );
+
+      const blocks = result.sections.value;
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0].toJSON()).toBeNull();
+    });
+
     it('exposes the whole blocks field with its own system descriptor', async () => {
       const result = await getUpdatedProductMetafields(
         { sections: [] },
