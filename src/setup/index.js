@@ -255,7 +255,7 @@ const getShopifyFields = async (content_type, entries, type, Path, entryMetaObje
           }
 
           // Loop through each entry and collect block entries
-          const entryBlockEntries = entry[fieldUid];
+          const entryBlockEntries = Array.isArray(entry[fieldUid]) ? entry[fieldUid] : [];
 
           // Loop through each block entry object
           for (const blockEntryObject of entryBlockEntries) {
@@ -341,7 +341,6 @@ const getShopifyFields = async (content_type, entries, type, Path, entryMetaObje
           fields.push({ key: field_key, value: field_value });
         }
       } else if (field.data_type === "file") {
-        // TODO: Handle file field
         if (!Object.prototype.hasOwnProperty.call(entry, fieldUid)) continue;
         const entryData = entry[fieldUid];
         let field_value = "";
@@ -360,6 +359,9 @@ const getShopifyFields = async (content_type, entries, type, Path, entryMetaObje
         }
 
         fields.push({ key: fieldUid, value: field_value });
+        // The theme renders the asset through image_url, which needs the url; a gid would not resolve.
+        const assetUrls = field?.multiple ? entryData.map((file) => file?.url) : entryData?.url;
+        saveDataInObject(safeType, path, { key: fieldUid, value: assetUrls }, field.data_type, safeEntryMetaObject, safeExtraData);
       } else if (field.data_type === "isodate") {
         if (!Object.prototype.hasOwnProperty.call(entry, fieldUid)) continue;
         const entryData = entry[fieldUid];
@@ -546,7 +548,7 @@ const getUpdatedProductMetafields = async (currentMetafields, contentType, entry
     }
 
     if (keyFieldType === 'blocks') {
-      const blockData = Object.prototype.hasOwnProperty.call(entry, key) ? entry[key] : [];
+      const blockData = Object.prototype.hasOwnProperty.call(entry, key) && Array.isArray(entry[key]) ? entry[key] : [];
       const finalBlockData = [];
       for (const block of blockData) {
         for (const blockData of Object.entries(block)) {
