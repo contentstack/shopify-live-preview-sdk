@@ -61,9 +61,27 @@ async function downloadRepositoryZip(
  */
 async function extractZipFile(zipPath: string, targetPath: string): Promise<void> {
   try {
-    
+
     const zip = new AdmZip(zipPath);
-    
+
+    // Guard against zip archives containing multiple entries whose names are
+    // canonically equivalent (e.g. "./a.txt" and "a.txt"). adm-zip's internal
+    // entry lookup can resolve such names inconsistently, so two entries that
+    // look distinct here could otherwise be interpreted differently by the
+    // archive reader than by the extractor. Normalize every entry name up
+    // front and reject the archive if any collide, rather than relying on
+    // extractAllTo's own interpretation of ambiguous entries.
+    const seenEntryNames = new Set<string>();
+    for (const entry of zip.getEntries()) {
+      const normalizedEntryName = path.posix.normalize(entry.entryName.replace(/\\/g, '/'));
+      if (seenEntryNames.has(normalizedEntryName)) {
+        throw new Error(
+          `Zip archive contains ambiguous duplicate entry name: "${entry.entryName}"`
+        );
+      }
+      seenEntryNames.add(normalizedEntryName);
+    }
+
     // Extract all files to target directory
     zip.extractAllTo(targetPath, true);
     
