@@ -2,9 +2,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
 import axios from 'axios';
-import { createWriteStream } from 'fs';
 import { pipeline } from 'stream/promises';
-import AdmZip from 'adm-zip';
+import * as tar from 'tar';
 
 export interface GitHubConfig {
   auth: string;
@@ -14,24 +13,22 @@ export interface GitHubConfig {
 }
 
 /**
- * Downloads a GitHub repository as a zip file and extracts it
+ * Downloads a GitHub repository as a tarball and extracts it
  * This is a fallback when git is not available (e.g., in serverless environments)
  */
-async function downloadRepositoryZip(
+async function downloadRepositoryArchive(
   config: Pick<GitHubConfig, 'auth' | 'owner' | 'repo' | 'branch'>,
   targetPath: string
 ): Promise<void> {
   const { auth, owner, repo, branch = 'main' } = config;
-  
+
   // GitHub API URL for downloading repository archive
-  const zipUrl = `https://api.github.com/repos/${owner}/${repo}/zipball/${branch}`;
-  const zipPath = path.join(targetPath, 'repo.zip');
-  
+  const tarballUrl = `https://api.github.com/repos/${owner}/${repo}/tarball/${branch}`;
+
   try {
-    
     const response = await axios({
       method: 'GET',
-      url: zipUrl,
+      url: tarballUrl,
       headers: {
         'Authorization': `token ${auth}`,
         'Accept': 'application/vnd.github.v3+json',
@@ -40,16 +37,7 @@ async function downloadRepositoryZip(
       responseType: 'stream'
     });
 
-    // Download the zip file
-    await pipeline(response.data, createWriteStream(zipPath));
-    
-    
-    // Extract the zip file (we'll need to implement this next)
-    await extractZipFile(zipPath, targetPath);
-    
-    // Clean up the zip file
-    fs.unlinkSync(zipPath);
-    
+    await extractTarball(response.data, targetPath);
   } catch (error) {
     console.error(`Failed to download repository from GitHub API:`, error);
     throw error;
@@ -57,53 +45,20 @@ async function downloadRepositoryZip(
 }
 
 /**
- * Extracts a zip file to the target directory using AdmZip
+ * Extracts a gzipped GitHub repository tarball into the target directory.
+ * GitHub wraps the repository in one `<owner>-<repo>-<sha>/` directory, which is stripped.
  */
-async function extractZipFile(zipPath: string, targetPath: string): Promise<void> {
+export async function extractTarball(
+  archive: NodeJS.ReadableStream,
+  targetPath: string
+): Promise<void> {
   try {
-    
-    const zip = new AdmZip(zipPath);
-    
-    // Extract all files to target directory
-    zip.extractAllTo(targetPath, true);
-    
-    
-    // Handle GitHub's zip structure - move files from the root subdirectory
-    const items = fs.readdirSync(targetPath);
-    const rootDir = items.find(item => {
-      const itemPath = path.join(targetPath, item);
-      return fs.statSync(itemPath).isDirectory() && item.includes('-');
-    });
-    
-    if (rootDir) {
-      const rootDirPath = path.join(targetPath, rootDir);
-      const subItems = fs.readdirSync(rootDirPath);
-      
-      // Move all files from subdirectory to target directory
-      for (const subItem of subItems) {
-        const srcPath = path.join(rootDirPath, subItem);
-        const destPath = path.join(targetPath, subItem);
-        
-        // Handle existing files
-        if (fs.existsSync(destPath)) {
-          if (fs.statSync(destPath).isDirectory()) {
-            fs.rmSync(destPath, { recursive: true, force: true });
-          } else {
-            fs.unlinkSync(destPath);
-          }
-        }
-        
-        fs.renameSync(srcPath, destPath);
-      }
-      
-      // Remove the now-empty subdirectory
-      fs.rmSync(rootDirPath, { recursive: true, force: true });
-    }
-    
+    // tar rejects absolute and `..` entry paths by default (preservePaths: false)
+    await pipeline(archive, tar.x({ cwd: targetPath, strip: 1 }));
   } catch (error) {
     const extractError = error as Error;
-    console.error(`Failed to extract zip file:`, extractError);
-    throw new Error(`Zip extraction failed: ${extractError.message}`);
+    console.error(`Failed to extract repository archive:`, extractError);
+    throw new Error(`Archive extraction failed: ${extractError.message}`);
   }
 }
 
@@ -187,7 +142,7 @@ export async function cloneRepository(
     if (error.status === 127 || error.message.includes('git: command not found')) {
       
       try {
-        await downloadRepositoryZip(cloneConfig, actualTargetPath);
+        await downloadRepositoryArchive(cloneConfig, actualTargetPath);
       } catch (apiError) {
         console.error(`Both git clone and GitHub API download failed:`, apiError);
         throw new Error(`Failed to obtain repository: Git unavailable and API download failed - ${(apiError as Error).message}`);
