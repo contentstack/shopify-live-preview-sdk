@@ -43,7 +43,7 @@
     "@types/express": "^4.17.21",
     "@types/jest": "^29.5.12",
     "@types/lodash": "^4.17.16",
-    "@types/node": "^20.17.48",
+    "@types/node": "^24",
     "@typescript-eslint/eslint-plugin": "^7.18.0",
     "@typescript-eslint/parser": "^7.18.0",
     "cpy-cli": "^5.0.0",
@@ -62,5 +62,10 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/contentstack/shopify-live-preview-sdk.git"
+  },
+  "overrides": {
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "^11.0.1"
+    }
   }
 }
