@@ -309,10 +309,7 @@ describe('getUpdatedProductMetafields', () => {
       ).rejects.toThrow('no access');
     });
 
-    // Documents a real defect at setup/index.js:659-662 — `await refUids.map(async …)`
-    // awaits the ARRAY, not the promises inside it, so each `reference` in the loop below
-    // is still a pending Promise and every derived handle reads "undefined".
-    it('loses each resolved reference in the multiple branch', async () => {
+    it('resolves each reference before deriving its system descriptor', async () => {
       jest
         .spyOn(global, 'fetch')
         .mockImplementation(
@@ -328,30 +325,33 @@ describe('getUpdatedProductMetafields', () => {
 
       const references = result.authors.value;
       expect(references).toHaveLength(1);
-      expect(references[0].system).toEqual({
-        handle: 'undefined',
-        type: 'undefined',
-        id: null,
-        url: null,
-      });
+      expect(references[0].system).toEqual({ handle: 'ref_1', type: 'author', id: null, url: null });
     });
 
-    it.failing('should resolve each reference before deriving its handle', async () => {
+    // An unawaited failure here is an unhandled rejection, which exits the caller's process.
+    it('propagates a CDA error for one of multiple references', async () => {
       jest
         .spyOn(global, 'fetch')
         .mockImplementation(
-          stubCdaFetch([['/entries/ref_1', { entry: { uid: 'ref_1', _content_type_uid: 'author' } }]])
+          stubCdaFetch([
+            ['/entries/ref_1', { entry: { uid: 'ref_1', _content_type_uid: 'author' } }],
+            ['/entries/ref_2', { error_code: 141, error_message: 'no access' }],
+          ])
         );
 
-      const result = await getUpdatedProductMetafields(
-        { authors: [] },
-        createContentTypeKeyBased([{ uid: 'authors', data_type: 'reference', multiple: true }]),
-        { authors: [{ uid: 'ref_1', _content_type_uid: 'author' }] },
-        options
-      );
-
-      // Flips green once the map is awaited with Promise.all.
-      expect(result.authors.value[0].system.handle).toBe('ref_1');
+      await expect(
+        getUpdatedProductMetafields(
+          { authors: [] },
+          createContentTypeKeyBased([{ uid: 'authors', data_type: 'reference', multiple: true }]),
+          {
+            authors: [
+              { uid: 'ref_1', _content_type_uid: 'author' },
+              { uid: 'ref_2', _content_type_uid: 'author' },
+            ],
+          },
+          options
+        )
+      ).rejects.toThrow('no access');
     });
   });
 

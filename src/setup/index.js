@@ -658,10 +658,9 @@ const getUpdatedProductMetafields = async (currentMetafields, contentType, entry
       const referenceSchema = contentType[key];
       if(referenceSchema.multiple){
         const refUids = Object.prototype.hasOwnProperty.call(entry, key) ? entry[key] : [];
-        const referenceData = await refUids?.map( async (refUid) => {
-          const refEntryData = await getEntry(refUid._content_type_uid, refUid.uid, hash);
-          return refEntryData;
-        });
+        const referenceData = await Promise.all(
+          (refUids ?? []).map((refUid) => getEntry(refUid._content_type_uid, refUid.uid, hash))
+        );
         const finalReferenceData = [];
         for (const reference of referenceData) {
           const currentMetafieldsData = currentMetafields[key]?.find((item) => {
