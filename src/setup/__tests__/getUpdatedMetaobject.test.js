@@ -189,9 +189,9 @@ describe('getUpdatedMetaobject', () => {
       expect(nested.values).toEqual([{ label: 'Inner' }]);
     });
 
-    // The group field itself never reaches saveDataInObject, so the parent type is absent
-    // unless the schema also has a scalar field.
-    it('does not create an entry for the parent type', async () => {
+    // The group value is saved on the PARENT too, so a block/entry can read `parent.details.label`
+    // (or `parent.details.value.label`, Shopify's metaobject style) without a second lookup.
+    it('saves the group value on the parent so nested fields are reachable from it', async () => {
       const result = await getUpdatedMetaobject(
         {},
         keyBasedFrom([
@@ -201,7 +201,24 @@ describe('getUpdatedMetaobject', () => {
         options
       );
 
-      expect(result.currentMetaobjects.product_ct).toBeUndefined();
+      const parent = result.currentMetaobjects.product_ct.entry_1.toJSON();
+      expect(parent.details.label).toBe('Inner');
+      expect(parent.details.value.label).toBe('Inner');
+    });
+
+    it('keeps the value alias out of enumeration and JSON output', async () => {
+      const result = await getUpdatedMetaobject(
+        {},
+        keyBasedFrom([
+          { uid: 'details', data_type: 'group', schema: [{ uid: 'label', data_type: 'text' }] },
+        ]),
+        { uid: 'entry_1', details: { label: 'Inner' } },
+        options
+      );
+
+      const details = result.currentMetaobjects.product_ct.entry_1.toJSON().details;
+      expect(Object.keys(details)).toEqual(['label']);
+      expect(JSON.parse(JSON.stringify(details))).toEqual({ label: 'Inner' });
     });
 
     it('keeps repeated group items apart when each carries a _metadata uid', async () => {
@@ -231,9 +248,9 @@ describe('getUpdatedMetaobject', () => {
       expect(nested.values).toEqual([{ label: 'A' }, { label: 'B' }]);
     });
 
-    // Documented, not endorsed: without _metadata.uid every item resolves to the same
-    // handle, so earlier items are overwritten by later ones.
-    it('collapses repeated group items that have no _metadata uid', async () => {
+    // Entries of a repeatable Group carry no _metadata.uid, so they are told apart by position.
+    // (They used to resolve to one shared handle, so later items overwrote earlier ones.)
+    it('keeps repeated group items apart by position when they have no _metadata uid', async () => {
       const result = await getUpdatedMetaobject(
         {},
         keyBasedFrom([
@@ -249,8 +266,14 @@ describe('getUpdatedMetaobject', () => {
       );
 
       const nested = result.currentMetaobjects['product_ct-items'];
-      expect(nested['entry_1-items'].toJSON()).toEqual({ label: 'B' });
-      expect(nested.values).toEqual([{ label: 'B' }]);
+      expect(nested['entry_1-items-0'].toJSON()).toEqual({ label: 'A' });
+      expect(nested['entry_1-items-1'].toJSON()).toEqual({ label: 'B' });
+      expect(nested.values).toEqual([{ label: 'A' }, { label: 'B' }]);
+
+      // ...and the parent exposes the whole list, in order, as a real array.
+      const parent = result.currentMetaobjects.product_ct.entry_1.toJSON();
+      expect(parent.items.map((item) => item.label)).toEqual(['A', 'B']);
+      expect(parent.items.value).toBe(parent.items);
     });
 
     it('skips a group field the entry does not carry', async () => {
@@ -411,22 +434,22 @@ describe('getUpdatedMetaobject', () => {
       ];
     };
 
-    // Documents a hard crash, not a cosmetic slip. setup/index.js:320 calls
-    // createMetaobjectEntries with 5 arguments against a 7-parameter signature, so
-    // safeEntryMetaObject lands in `type`. Line 433 then interpolates it into a template
-    // string, and because that object is built with Object.create(null) it has no
-    // toString, so the whole branch throws. Any ref_multiple reference with entries to
-    // create fails this way today.
-    it('throws when a multiple reference actually has entries to create', async () => {
-      await expect(getUpdatedMetaobject(...multipleReferenceArgs())).rejects.toThrow(
-        'Cannot convert object to primitive value'
-      );
-    });
-
-    it.failing('should resolve a multiple reference through the matching content type', async () => {
+    // Regression guard: the multiple-reference branch used to call createMetaobjectEntries with
+    // 5 arguments against a 7-parameter signature, so the metaobject store landed in `type` and
+    // the branch threw "Cannot convert object to primitive value" for any ref_multiple reference
+    // that had entries to create.
+    it('resolves a multiple reference through the matching content type', async () => {
       const result = await getUpdatedMetaobject(...multipleReferenceArgs());
 
       expect(result.currentMetaobjects.author_ct.ref_1.toJSON()).toEqual({ name: 'Ada' });
+    });
+
+    it('exposes the fetched references on the parent, in authored order', async () => {
+      const result = await getUpdatedMetaobject(...multipleReferenceArgs());
+
+      const authors = result.currentMetaobjects.product_ct.entry_1.toJSON().authors;
+      expect(authors.map((a) => a.name)).toEqual(['Ada']);
+      expect(authors.value).toBe(authors);
     });
 
     it('propagates a CDA failure while resolving a reference', async () => {
@@ -645,52 +668,69 @@ describe('getUpdatedMetaobject', () => {
     });
   });
 
-  // These branches compute a value and push it onto getShopifyFields' local `fields`
-  // array — which createMetaobjectEntries throws away (it never returns it). So the
-  // transform runs but its output cannot reach the caller. Pinned deliberately: this is
-  // the discard that also produces the "[undefined]" gids tracked in Q1.
-  describe('branches whose computed value is discarded', () => {
-    it.each([
-      ['isodate', { uid: 'published_at', data_type: 'isodate' }, { published_at: '2026-08-03' }],
-      [
-        'link',
-        { uid: 'cta', data_type: 'link' },
-        { cta: { title: 'Buy', href: 'https://shop/x' } },
-      ],
-      ['json', { uid: 'raw', data_type: 'json' }, { raw: { any: 'shape' } }],
-    ])('computes but discards the %s field value', async (_label, field, entryPart) => {
+  // isodate / link / json values used to be computed and then thrown away, so a theme could never
+  // read them during Live Preview. They are saved now, in the shape a Shopify theme reads.
+  describe('isodate, link and json fields', () => {
+    it('surfaces an isodate value as an ISO string', async () => {
       const result = await getUpdatedMetaobject(
         {},
-        keyBasedFrom([field, { uid: 'title', data_type: 'text' }]),
-        { uid: 'entry_1', title: 'Kept', ...entryPart },
+        keyBasedFrom([{ uid: 'published_at', data_type: 'isodate' }, { uid: 'title', data_type: 'text' }]),
+        { uid: 'entry_1', title: 'Kept', published_at: '2026-08-03' },
         options
       );
 
-      // Only the scalar field survives; the computed value above reaches no caller.
-      expect(result.currentMetaobjects.product_ct.values).toEqual([{ title: 'Kept' }]);
+      expect(result.currentMetaobjects.product_ct.values).toEqual([
+        { title: 'Kept', published_at: '2026-08-03T00:00:00.000Z' },
+      ]);
     });
 
-    it('handles multiple isodate and link values without surfacing them', async () => {
+    it('surfaces a link as { text, url } and keeps title/href too', async () => {
+      const result = await getUpdatedMetaobject(
+        {},
+        keyBasedFrom([{ uid: 'cta', data_type: 'link' }, { uid: 'title', data_type: 'text' }]),
+        { uid: 'entry_1', title: 'Kept', cta: { title: 'Buy', href: 'https://shop/x' } },
+        options
+      );
+
+      const cta = result.currentMetaobjects.product_ct.entry_1.toJSON().cta;
+      expect(cta).toEqual({ text: 'Buy', url: 'https://shop/x', title: 'Buy', href: 'https://shop/x' });
+      // reachable the way Shopify's own link metafield is: cta.value.url
+      expect(cta.value.url).toBe('https://shop/x');
+    });
+
+    it('surfaces a json field as its parsed value', async () => {
+      const result = await getUpdatedMetaobject(
+        {},
+        keyBasedFrom([{ uid: 'raw', data_type: 'json' }, { uid: 'title', data_type: 'text' }]),
+        { uid: 'entry_1', title: 'Kept', raw: { any: 'shape' } },
+        options
+      );
+
+      expect(result.currentMetaobjects.product_ct.values).toEqual([{ title: 'Kept', raw: { any: 'shape' } }]);
+    });
+
+    it('surfaces repeatable isodate and link fields as real arrays', async () => {
       const result = await getUpdatedMetaobject(
         {},
         keyBasedFrom([
           { uid: 'dates', data_type: 'isodate', multiple: true },
           { uid: 'links', data_type: 'link', multiple: true },
-          { uid: 'title', data_type: 'text' },
         ]),
         {
           uid: 'entry_1',
-          title: 'Kept',
           dates: ['2026-08-03', '2026-08-04'],
-          links: [{ title: 'A', href: 'https://a' }, { title: null, href: null }],
+          links: [{ title: 'A', href: 'https://a' }],
         },
         options
       );
 
-      expect(result.currentMetaobjects.product_ct.values).toEqual([{ title: 'Kept' }]);
+      const saved = result.currentMetaobjects.product_ct.entry_1.toJSON();
+      expect(Array.from(saved.dates)).toEqual(['2026-08-03T00:00:00.000Z', '2026-08-04T00:00:00.000Z']);
+      expect(saved.links[0].url).toBe('https://a');
+      expect(saved.links.value).toBe(saved.links);
     });
 
-    it('honours hide_time on an isodate field without surfacing it', async () => {
+    it('honours hide_time on an isodate field', async () => {
       const result = await getUpdatedMetaobject(
         {},
         keyBasedFrom([
@@ -701,7 +741,7 @@ describe('getUpdatedMetaobject', () => {
         options
       );
 
-      expect(result.currentMetaobjects.product_ct.values).toEqual([{ title: 'Kept' }]);
+      expect(result.currentMetaobjects.product_ct.values).toEqual([{ title: 'Kept', day: '2026-08-03' }]);
     });
   });
 
