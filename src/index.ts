@@ -1,5 +1,8 @@
 import { Liquid } from 'liquidjs';
-import { GitHubConfig, cloneRepository } from './Github/index.js';
+import { CloneConfig, cloneRepository } from './Github/index.js';
+
+export { RepositoryInputError } from './Github/index.js';
+export type { GitHubConfig, CloneConfig } from './Github/index.js';
 import {
   createMetaobjectEntries,
   getUpdatedProductMetafields,
@@ -172,7 +175,12 @@ export class LivePreviewShopify {
     return createContentTypeKeyBased(contentType);
   }
 
-  public static async cloneRepository(cloneConfig: Pick<GitHubConfig, 'auth' | 'owner' | 'repo' | 'branch'>, targetPath: string): Promise<void> {
+  /**
+   * Clones a repository into `targetPath` (which is emptied first). Pass `themeRoot` for a theme that lives in a folder
+   * of a larger repository: only that folder is fetched and its contents are placed in `targetPath`.
+   * @throws RepositoryInputError when the owner, repository, branch, token or theme folder is not acceptable.
+   */
+  public static async cloneRepository(cloneConfig: CloneConfig, targetPath: string): Promise<void> {
     await cloneRepository(cloneConfig, targetPath);
   }
 }
