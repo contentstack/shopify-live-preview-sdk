@@ -244,6 +244,204 @@ describe('getUpdatedProductMetafields', () => {
     });
   });
 
+  // Groups, links, global fields and references INSIDE a block arrive in Contentstack's raw shape.
+  // The blocks branch hands the theme the same dual-access shape Shopify does (see
+  // normalizeNestedValue in setup/index.js), so one template works on both engines.
+  describe('blocks field: nested values', () => {
+    const blocksKeyBasedCt = () => createContentTypeKeyBased([{ uid: 'sections', data_type: 'blocks' }]);
+
+    const faqBlock = {
+      _metadata: { uid: 'faq_1' },
+      section_title: 'FAQ',
+      faq_items: [
+        { question: 'Q1', answer: 'A1' },
+        { question: 'Q2', answer: 'A2' },
+      ],
+      cta: { title: 'Shop', href: '/shop' },
+      image: { uid: 'asset_1', url: 'https://cdn/x.jpg', filename: 'x.jpg', content_type: 'image/jpeg' },
+    };
+
+    const rebuild = async (block, current = { sections: [] }) =>
+      (await getUpdatedProductMetafields(current, blocksKeyBasedCt(), { sections: [{ faq: block }] }, options))
+        .sections.value[0];
+
+    it('exposes a repeatable group as a real array with a value alias', async () => {
+      const block = await rebuild(faqBlock);
+
+      expect(Array.isArray(block.faq_items)).toBe(true);
+      expect(block.faq_items.map((i) => i.question)).toEqual(['Q1', 'Q2']);
+      expect(block.faq_items.value).toBe(block.faq_items);
+      expect(block.faq_items[0].value.answer).toBe('A1');
+    });
+
+    it('exposes a link in the Shopify shape and keeps the raw keys', async () => {
+      const block = await rebuild(faqBlock);
+
+      expect(block.cta).toMatchObject({ text: 'Shop', url: '/shop', title: 'Shop', href: '/shop' });
+      expect(block.cta.value.url).toBe('/shop');
+    });
+
+    it('leaves an asset untouched so image_url keeps working', async () => {
+      const block = await rebuild(faqBlock);
+
+      expect(block.image).toEqual(faqBlock.image);
+      expect(block.image.url).toBe('https://cdn/x.jpg');
+    });
+
+    it('does not leak the value alias into serialization', async () => {
+      const block = await rebuild(faqBlock);
+
+      expect(JSON.parse(JSON.stringify(block.faq_items))).toEqual(faqBlock.faq_items);
+      expect(Object.keys(block.faq_items[0])).toEqual(['question', 'answer']);
+    });
+
+    it('keeps the stored ___system handle and the block uid lookup working', async () => {
+      const storedSystem = { type: 't', handle: 'entry_1-sections-faq_accordion_section-faq_1', id: null, url: null };
+      const block = await rebuild(faqBlock, { sections: [{ ___system: storedSystem }] });
+
+      expect(block.system).toEqual(storedSystem);
+    });
+
+    it('resolves a reference inside a block to the fetched entry', async () => {
+      jest
+        .spyOn(global, 'fetch')
+        .mockImplementation(stubCdaFetch([['/entries/ref_1', { entry: { uid: 'ref_1', name: 'Ada' } }]]));
+
+      const block = await rebuild({
+        _metadata: { uid: 'b1' },
+        authors: [{ uid: 'ref_1', _content_type_uid: 'author_ct' }],
+      });
+
+      expect(block.authors).toHaveLength(1);
+      expect(block.authors[0].name).toBe('Ada');
+    });
+
+    it('leaves a reference it cannot fetch as-is instead of failing the preview', async () => {
+      jest.spyOn(console, 'error').mockImplementation(() => {});
+      jest
+        .spyOn(global, 'fetch')
+        .mockImplementation(stubCdaFetch([['/entries/ref_1', { error_code: 141, error_message: 'gone' }]]));
+
+      const block = await rebuild({
+        _metadata: { uid: 'b1' },
+        authors: [{ uid: 'ref_1', _content_type_uid: 'author_ct' }],
+      });
+
+      expect(block.authors[0]).toEqual({ uid: 'ref_1', _content_type_uid: 'author_ct' });
+    });
+
+    it('stops following references that point back at themselves', async () => {
+      const fetchSpy = jest.spyOn(global, 'fetch').mockImplementation(
+        stubCdaFetch([
+          [
+            '/entries/loop',
+            { entry: { uid: 'loop', related: [{ uid: 'loop', _content_type_uid: 'page_ct' }] } },
+          ],
+        ])
+      );
+
+      const block = await rebuild({
+        _metadata: { uid: 'b1' },
+        related: [{ uid: 'loop', _content_type_uid: 'page_ct' }],
+      });
+
+      expect(block.related[0].uid).toBe('loop');
+      expect(fetchSpy.mock.calls.length).toBeLessThanOrEqual(2);
+    });
+
+    it('issues no request when the block holds no references', async () => {
+      const fetchSpy = jest.spyOn(global, 'fetch').mockImplementation(stubCdaFetch([]));
+
+      await rebuild(faqBlock);
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    // The point of the dual shape: one template, both engines. Real Shopify reads
+    // `block.cta.value.url` / `block.faq_items.value`; the plain-object style reads them directly.
+    it('renders through Liquid with either access style', async () => {
+      const { Liquid } = await import('liquidjs');
+      const block = await rebuild(faqBlock);
+
+      const html = await new Liquid().parseAndRender(
+        '{% for i in block.faq_items %}[{{ i.question }}={{ i.answer }}]{% endfor %}' +
+          '|{% for i in block.faq_items.value %}<{{ i.value.question }}>{% endfor %}' +
+          '|{{ block.cta.url }}|{{ block.cta.value.text }}|{{ block.faq_items.size }}',
+        { block }
+      );
+
+      expect(html).toBe('[Q1=A1][Q2=A2]|<Q1><Q2>|/shop|Shop|2');
+    });
+  });
+
+  // The live-preview entry can arrive without a block `_metadata.uid`. Synthesizing a handle then
+  // ("<entry>-sections-<type>") makes the theme read the block TYPE as the block id, and the block no
+  // longer matches the page's own copy of itself. The page's real handle is recovered by block type
+  // and by position among blocks of that type.
+  describe('blocks field: block without a _metadata uid', () => {
+    const blocksKeyBasedCt = () => createContentTypeKeyBased([{ uid: 'sections', data_type: 'blocks' }]);
+    const baselineFor = (...handles) => ({
+      sections: handles.map((handle) => ({ ___system: { handle, type: 't', id: null, url: null } })),
+    });
+    const rebuild = (blocks, current) =>
+      getUpdatedProductMetafields(current, blocksKeyBasedCt(), { sections: blocks }, options).then(
+        (result) => result.sections.value
+      );
+
+    it('reuses the page handle of the same block type', async () => {
+      const blocks = await rebuild(
+        [{ faq: { section_title: 'FAQ' } }],
+        baselineFor('entry_1-sections-faq-cs_real_uid')
+      );
+
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0].system.handle).toBe('entry_1-sections-faq-cs_real_uid');
+    });
+
+    it('matches several uid-less blocks of one type to the page handles in order', async () => {
+      const blocks = await rebuild(
+        [
+          { hero: { heading: 'A' } },
+          { faq: { section_title: 'one' } },
+          { faq: { section_title: 'two' } },
+        ],
+        baselineFor('entry_1-sections-hero-cs_h', 'entry_1-sections-faq-cs_f1', 'entry_1-sections-faq-cs_f2')
+      );
+
+      expect(blocks.map((b) => b.system.handle)).toEqual([
+        'entry_1-sections-hero-cs_h',
+        'entry_1-sections-faq-cs_f1',
+        'entry_1-sections-faq-cs_f2',
+      ]);
+    });
+
+    it('does not borrow a handle that belongs to a different block type', async () => {
+      const blocks = await rebuild([{ faq: { section_title: 'FAQ' } }], baselineFor('entry_1-sections-hero-cs_h'));
+
+      expect(blocks[0].system.handle).toBe('entry_1-sections-faq');
+    });
+
+    it('still synthesizes a descriptor when the page has no baseline for the block', async () => {
+      const blocks = await rebuild([{ faq: { section_title: 'FAQ' } }], { sections: [] });
+
+      expect(blocks[0].system).toEqual({
+        handle: 'entry_1-sections-faq',
+        type: 'product_ct-sections-faq',
+        id: undefined,
+        url: null,
+      });
+    });
+
+    it('prefers the uid match when the block does carry a _metadata uid', async () => {
+      const blocks = await rebuild(
+        [{ faq: { _metadata: { uid: 'cs_b' }, section_title: 'FAQ' } }],
+        baselineFor('entry_1-sections-faq-cs_a', 'entry_1-sections-faq-cs_b')
+      );
+
+      expect(blocks[0].system.handle).toBe('entry_1-sections-faq-cs_b');
+    });
+  });
+
   describe('file field', () => {
     const fileKeyBasedCt = () => createContentTypeKeyBased([{ uid: 'gallery', data_type: 'file' }]);
 

@@ -192,6 +192,90 @@ const fetchContentType = async (contentTypeUid, hash) => {
   return res.json();
 };
 
+// ---------------------------------------------------------------------------------------------
+// Nested values (group / link / global_field / reference inside blocks or other groups)
+//
+// Contentstack's raw shape for these differs from what a Shopify Liquid theme reads:
+//   - a Link field arrives as { title, href }, Shopify exposes { text, url };
+//   - a Group / Global Field arrives as a plain object, Shopify exposes a metaobject whose
+//     fields are read directly (block.cta.url) or through `.value` (block.cta.value.url);
+//   - a Reference arrives as [{ uid, _content_type_uid }] and must be fetched to be useful.
+// The helpers below convert the raw value into one object that answers BOTH access styles, so
+// the same template works on real Shopify and on the middleware. `value` is a non-enumerable
+// alias of the object itself, so it never shows up in `| json` output or in iteration.
+// ---------------------------------------------------------------------------------------------
+const MAX_NESTED_DEPTH = 8;
+const MAX_REFERENCE_DEPTH = 2;
+
+const isAssetValue = (v) =>
+  v !== null && typeof v === 'object' && typeof v.url === 'string' &&
+  (typeof v.filename === 'string' || typeof v.content_type === 'string');
+
+const isLinkValue = (v) =>
+  v !== null && typeof v === 'object' && !Array.isArray(v) && typeof v.href === 'string' &&
+  Object.keys(v).every((k) => k === 'title' || k === 'href');
+
+const isReferenceValue = (v) =>
+  v !== null && typeof v === 'object' && typeof v.uid === 'string' && typeof v._content_type_uid === 'string';
+
+const isUnresolvedReference = (v) =>
+  isReferenceValue(v) && Object.keys(v).every((k) => k === 'uid' || k === '_content_type_uid');
+
+const defineValueAlias = (target) => {
+  if (!('value' in target)) {
+    Object.defineProperty(target, 'value', { get() { return target; }, enumerable: false, configurable: true });
+  }
+  return target;
+};
+
+/** Converts a raw nested Contentstack value into the dual-access, Shopify-like shape. */
+const normalizeNestedValue = (value, depth = 0) => {
+  if (value === null || typeof value !== 'object' || depth > MAX_NESTED_DEPTH) return value;
+  if (Array.isArray(value)) return defineValueAlias(value.map((item) => normalizeNestedValue(item, depth + 1)));
+  if (isAssetValue(value) || isReferenceValue(value)) return value;
+  if (isLinkValue(value)) {
+    return defineValueAlias({ text: value.title, url: value.href, title: value.title, href: value.href });
+  }
+  return defineValueAlias(normalizeNestedFields(value, depth + 1));
+};
+
+/** Normalizes every field of an object (a block, a group entry) without aliasing the object itself. */
+const normalizeNestedFields = (obj, depth = 0) => {
+  const out = Object.create(null);
+  if (obj === null || typeof obj !== 'object') return out;
+  for (const [rawKey, v] of Object.entries(obj)) {
+    const key = sanitizeKey(rawKey);
+    if (!key) continue;
+    out[key] = normalizeNestedValue(v, depth);
+  }
+  return out;
+};
+
+/**
+ * Replaces unresolved references ({ uid, _content_type_uid }) anywhere inside a value with the
+ * fetched entry, up to MAX_REFERENCE_DEPTH levels so reference cycles cannot run away. A reference
+ * that cannot be fetched is left as-is rather than failing the whole preview.
+ */
+const resolveNestedReferences = async (value, hash, depth = 0) => {
+  if (value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return Promise.all(value.map((item) => resolveNestedReferences(item, hash, depth)));
+  if (isAssetValue(value)) return value;
+  if (isUnresolvedReference(value)) {
+    if (depth >= MAX_REFERENCE_DEPTH) return value;
+    try {
+      const entry = await getEntry(value._content_type_uid, value.uid, hash);
+      return await resolveNestedReferences(entry, hash, depth + 1);
+    } catch (error) {
+      return value;
+    }
+  }
+  const out = {};
+  for (const [key, v] of Object.entries(value)) {
+    out[key] = await resolveNestedReferences(v, hash, depth);
+  }
+  return out;
+};
+
 const getShopifyFields = async (content_type, entries, type, Path, entryMetaObject, dataCSLPMapping, extraData) => {
   // Sanitize inbound arguments
   const safeContentType = sanitizeContentType(content_type) || {};
@@ -203,8 +287,12 @@ const getShopifyFields = async (content_type, entries, type, Path, entryMetaObje
   const safeExtraData = (extraData && typeof extraData === 'object') ? createNullProtoCopy(extraData) : {};
   const allFields = [];
   const content_type_fields = safeContentType?.schema;
-  for (const entry of safeEntries) {
-    const entryUid = entry?._metadata?.uid ? `${safePath}-${entry?._metadata?.uid}` : safePath;
+  for (const [entryIndex, entry] of safeEntries.entries()) {
+    // Blocks carry a stable _metadata.uid; entries of a repeatable Group do not. Without an index
+    // every entry of a repeatable Group would share one path and overwrite the previous one.
+    const entryUid = entry?._metadata?.uid
+      ? `${safePath}-${entry?._metadata?.uid}`
+      : (safeEntries.length > 1 && safePath ? `${safePath}-${entryIndex}` : safePath);
     let path = safePath ? entryUid : entry?.uid;
     const fields = [];
     for (const field of content_type_fields) {
@@ -224,6 +312,7 @@ const getShopifyFields = async (content_type, entries, type, Path, entryMetaObje
           const group_key = fieldUid;
           const group_value = `[${groupGids?.join(',')}]`;
           fields.push({ key: group_key, value: group_value });
+          saveDataInObject(safeType, path, { key: fieldUid, value: normalizeNestedValue(groupEntries) }, field.data_type, safeEntryMetaObject, safeExtraData);
         } else {
           const groupEntry = getSafeOwn(entry, fieldUid);
           if (groupEntry === undefined || groupEntry === null) continue;
@@ -234,6 +323,7 @@ const getShopifyFields = async (content_type, entries, type, Path, entryMetaObje
           const group_key = fieldUid;
           const group_value = createdEntries?.[0]?.id;
           fields.push({ key: group_key, value: group_value });
+          saveDataInObject(safeType, path, { key: fieldUid, value: normalizeNestedValue(groupEntry) }, field.data_type, safeEntryMetaObject, safeExtraData);
         }
       } else if (field.data_type === "blocks") {
         if (!Object.prototype.hasOwnProperty.call(entry, fieldUid)) continue;
@@ -293,18 +383,21 @@ const getShopifyFields = async (content_type, entries, type, Path, entryMetaObje
           const globalField_key = fieldUid;
           const globalField_value = `[${globalGids?.join(',')}]`;
           fields.push({ key: globalField_key, value: globalField_value });
+          saveDataInObject(safeType, path, { key: fieldUid, value: normalizeNestedValue(entry[fieldUid]) }, field.data_type, safeEntryMetaObject, safeExtraData);
         } else {
           const globalFieldResults = await createMetaobjectEntries(globalFieldContentType, [entry[fieldUid]], "", tempPath, safeEntryMetaObject, safeDataCSLPMapping, safeExtraData);
 
           const globalField_key = fieldUid;
           const globalField_value = globalFieldResults?.[0]?.id
           fields.push({ key: globalField_key, value: globalField_value });
+          saveDataInObject(safeType, path, { key: fieldUid, value: normalizeNestedValue(entry[fieldUid]) }, field.data_type, safeEntryMetaObject, safeExtraData);
         }
       } else if (field.data_type === "reference") {
         if (!Object.prototype.hasOwnProperty.call(entry, fieldUid)) continue;
 
         if (field?.field_metadata?.ref_multiple) {
           const referenceGids = [];
+          const fetchedByKey = new Map();
           for (const contentType of field.reference_to || []) {
             const entriesToCreate = [];
             for (const entryData of entry[fieldUid]) {
@@ -313,17 +406,25 @@ const getShopifyFields = async (content_type, entries, type, Path, entryMetaObje
                 const csEntry = await getEntry(_content_type_uid, uid, safeExtraData?.hash);
                 if (!csEntry) throw new Error(`Entry not found for ${_content_type_uid} and ${uid}`);
                 entriesToCreate.push(csEntry);
+                fetchedByKey.set(`${_content_type_uid}:${uid}`, csEntry);
               }
             }
             if (entriesToCreate.length) {
               const contentTypeResponse = await fetchContentType(contentType, safeExtraData?.hash);
-              const metaobjectEntries = await createMetaobjectEntries(contentTypeResponse?.content_type, entriesToCreate, safeEntryMetaObject, safeDataCSLPMapping, safeExtraData);
+              // type and path were missing here, which shifted every later argument by two slots
+              // (the metaobject store landed in `type`). Same call shape as the single reference below.
+              const metaobjectEntries = await createMetaobjectEntries(contentTypeResponse?.content_type, entriesToCreate, "", "", safeEntryMetaObject, safeDataCSLPMapping, safeExtraData);
               metaobjectEntries?.forEach((entry) => referenceGids.push(`"${entry?.id}"`));
             }
           }
           const field_key = fieldUid;
           const field_value = `[${referenceGids.join(',')}]`;
           fields.push({ key: field_key, value: field_value });
+          // Keep the authored order of the reference list, whatever the grouping by content type above.
+          const orderedReferences = entry[fieldUid]
+            .map((ref) => fetchedByKey.get(`${ref?._content_type_uid}:${ref?.uid}`))
+            .filter(Boolean);
+          saveDataInObject(safeType, path, { key: fieldUid, value: normalizeNestedValue(orderedReferences) }, field.data_type, safeEntryMetaObject, safeExtraData);
         } else {
           const entryData = entry[fieldUid];
           if (isEmpty(entryData)) {
@@ -339,6 +440,7 @@ const getShopifyFields = async (content_type, entries, type, Path, entryMetaObje
           const field_key = fieldUid;
           const field_value = metaobjectEntry?.id;
           fields.push({ key: field_key, value: field_value });
+          saveDataInObject(safeType, path, { key: fieldUid, value: normalizeNestedValue(csEntry) }, field.data_type, safeEntryMetaObject, safeExtraData);
         }
       } else if (field.data_type === "file") {
         if (!Object.prototype.hasOwnProperty.call(entry, fieldUid)) continue;
@@ -366,6 +468,8 @@ const getShopifyFields = async (content_type, entries, type, Path, entryMetaObje
         if (!Object.prototype.hasOwnProperty.call(entry, fieldUid)) continue;
         const entryData = entry[fieldUid];
         let field_value = '';
+        // What a theme reads: a plain string, or a real array for a repeatable date field.
+        let saved_value = '';
 
         if (!isEmpty(entryData)) {
           if (field?.multiple) {
@@ -374,16 +478,21 @@ const getShopifyFields = async (content_type, entries, type, Path, entryMetaObje
               return (new Date(i)).toISOString();
             });
             field_value = `[${values.join(',')}]`;
+            saved_value = normalizeNestedValue(values);
           }
           else {
             field_value = field?.field_metadata?.hide_time ? entryData : (new Date(entryData)).toISOString();
+            saved_value = field_value;
           }
         }
 
         fields.push({ key: fieldUid, value: field_value });
+        saveDataInObject(safeType, path, { key: fieldUid, value: saved_value }, field.data_type, safeEntryMetaObject, safeExtraData);
       } else if (field.data_type === 'link') {
         if (!Object.prototype.hasOwnProperty.call(entry, fieldUid)) continue;
         const field_key = fieldUid;
+        // Shopify shape ({ text, url }), reachable as block.cta.url and block.cta.value.url.
+        saveDataInObject(safeType, path, { key: fieldUid, value: normalizeNestedValue(entry[fieldUid]) }, field.data_type, safeEntryMetaObject, safeExtraData);
 
         if (field.multiple) {
           const field_values = entry[fieldUid]
@@ -410,6 +519,7 @@ const getShopifyFields = async (content_type, entries, type, Path, entryMetaObje
         const field_key = fieldUid;
         const field_value = JSON.stringify(entry[fieldUid]);
         fields.push({ key: field_key, value: field_value });
+        saveDataInObject(safeType, path, { key: field_key, value: normalizeNestedValue(entry[fieldUid]) }, field.data_type, safeEntryMetaObject, safeExtraData);
       }
       else {
         const field_key = fieldUid;
@@ -550,11 +660,31 @@ const getUpdatedProductMetafields = async (currentMetafields, contentType, entry
     if (keyFieldType === 'blocks') {
       const blockData = Object.prototype.hasOwnProperty.call(entry, key) && Array.isArray(entry[key]) ? entry[key] : [];
       const finalBlockData = [];
+      const blockTypeOccurrence = Object.create(null);
       for (const block of blockData) {
-        for (const blockData of Object.entries(block)) {
-          const currentMetafieldsData = currentMetafields[key].find((item) => {
-            return item?.___system?.handle?.includes(`-${blockData[1]?._metadata?.uid}`) || false
-          });
+        for (const [blockTypeKey, rawBlock] of Object.entries(block)) {
+          // Nested Groups / Links / Global Fields / References inside the block arrive in Contentstack's
+          // raw shape; hand the theme the same dual-access shape Shopify gives it (see normalizeNestedValue).
+          const normalizedBlock = rawBlock !== null && typeof rawBlock === 'object'
+            ? normalizeNestedFields(await resolveNestedReferences(rawBlock, hash))
+            : rawBlock;
+          const blockData = [blockTypeKey, normalizedBlock];
+          const baselineBlocks = Array.isArray(currentMetafields[key]) ? currentMetafields[key] : [];
+          const blockUid = blockData[1]?._metadata?.uid;
+          let currentMetafieldsData = blockUid
+            ? baselineBlocks.find((item) => item?.___system?.handle?.includes(`-${blockUid}`) || false)
+            : undefined;
+          // The live-preview entry can arrive without a block `_metadata.uid` (seen on a block backed by a
+          // newly created global field). Without a uid the handle below would be synthesized as
+          // "<entry>-<field>-<type>", whose last segment the theme then reads as the block id, and the
+          // block would no longer match the page's own copy of itself (wrong data-cslp, duplicate block).
+          // Recover the page's real handle by block type and by position among blocks of that type.
+          if (!blockUid) {
+            const typeMarker = `-${key}-${blockData[0]}-`;
+            const sameTypeBaseline = baselineBlocks.filter((item) => item?.___system?.handle?.includes(typeMarker));
+            currentMetafieldsData = sameTypeBaseline[blockTypeOccurrence[blockData[0]] || 0];
+          }
+          blockTypeOccurrence[blockData[0]] = (blockTypeOccurrence[blockData[0]] || 0) + 1;
           if (currentMetafieldsData) {
             const systemData = currentMetafieldsData.___system;
             let value = blockData[1];
